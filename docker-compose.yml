@@ -1,5 +1,3 @@
-version: '3'
-
 services:
   chatwoot-automation:
     build:
@@ -12,6 +10,7 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+    command: ["./entrypoint.sh"]
     networks:
       - chatwoot-network
 
