@@ -6,7 +6,7 @@ import logging
 from typing import Dict, Any, Optional, List, Callable
 from dotenv import load_dotenv
 import langsmith as ls
-from langchain.callbacks.tracers.langchain import wait_for_all_tracers
+from langchain_community.callbacks.tracers.langchain import wait_for_all_tracers
 
 # Load environment variables
 load_dotenv()
