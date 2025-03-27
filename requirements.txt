@@ -9,6 +9,7 @@ openai>=1.6.1  # Updated to be compatible with langchain-openai
 langchain>=0.0.335
 langchain-core>=0.1.17
 requests>=2.31.0
+langchain-deepseek>=0.0.2  # Added for DeepSeek integration
 
 # Testing dependencies
 pytest>=8.0.0
