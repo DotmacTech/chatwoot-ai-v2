@@ -12,7 +12,8 @@ from datetime import datetime
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain.chains import LLMChain
-from langchain.chat_models import ChatOpenAI as DeepSeekChat
+# Fix the class name to match what's available in the package
+from langchain_deepseek import ChatDeepSeek
 from langsmith import Client
 from langsmith.run_helpers import traceable
 
@@ -75,7 +76,12 @@ class IntentClassifier:
         """
         self.model_name = model_name or os.getenv("DEEPSEEK_MODEL_NAME", "deepseek-reasoner")
         self.temperature = temperature
-        self.llm = DeepSeekChat(model_name=self.model_name, temperature=self.temperature)
+        # Update to use ChatDeepSeek with proper API key
+        self.llm = ChatDeepSeek(
+            model_name=self.model_name, 
+            temperature=self.temperature,
+            api_key=os.getenv("DEEPSEEK_API_KEY")
+        )
         self.langsmith_client = Client()
         self.feedback_data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 
                                               "data", "intent_feedback.json")
