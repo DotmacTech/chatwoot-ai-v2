@@ -1,15 +1,14 @@
-fastapi==0.95.0
-uvicorn==0.21.1
-python-dotenv==1.0.0
-httpx==0.24.0
-pydantic==1.10.7
-jinja2==3.1.2
-langsmith==0.0.30
-openai==0.27.8
-langchain==0.0.267
-langchain-core==0.0.10
-langchain-openai==0.0.2
-requests>=2.31.0
+fastapi>=0.104.0  # Updated to support pydantic v2
+uvicorn>=0.21.1
+python-dotenv>=1.0.0
+httpx>=0.24.0
+pydantic>=2.5.2
+jinja2>=3.1.2
+langsmith>=0.0.63  # Updated to be compatible with langchain
+openai>=1.6.1  # Updated to be compatible with langchain-openai
 langchain>=0.0.335
 langchain-core>=0.1.17
-pydantic>=2.5.2
+requests>=2.31.0
+
+# Optional dependencies - uncomment if needed
+# langchain-openai>=0.0.2

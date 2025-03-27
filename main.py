@@ -28,44 +28,11 @@ CHATWOOT_SECRET = os.getenv("CHATWOOT_WEBHOOK_SECRET")
 async def webhook(request: Request):
     """
     Endpoint to receive Chatwoot webhooks
-    Verifies HMAC signature before processing
+    Processes webhook data without signature verification
     """
-    # Get signature from headers
-    signature = request.headers.get("X-Chatwoot-Signature")
-    if not signature:
-        raise HTTPException(status_code=401, detail="Missing signature header")
-    
-    # Get request body
-    body = await request.body()
-    
-    # Verify signature
-    if not verify_signature(body, signature, CHATWOOT_SECRET):
-        raise HTTPException(status_code=401, detail="Invalid signature")
-    
-    # Process webhook payload
+    # Process webhook payload directly
     payload = await request.json()
     return await process_webhook(payload)
-
-def verify_signature(body: bytes, signature: str, secret: str) -> bool:
-    """
-    Verify the webhook signature using HMAC-SHA256
-    
-    Args:
-        body: Raw request body bytes
-        signature: Signature from X-Chatwoot-Signature header
-        secret: Webhook secret from environment variables
-        
-    Returns:
-        bool: True if signature is valid
-    """
-    if not secret:
-        raise ValueError("CHATWOOT_WEBHOOK_SECRET not configured")
-        
-    # Create HMAC-SHA256 hash
-    digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    
-    # Use constant-time comparison to prevent timing attacks
-    return hmac.compare_digest(digest, signature)
 
 @app.get("/health")
 async def health_check():
