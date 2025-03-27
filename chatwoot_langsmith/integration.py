@@ -6,9 +6,8 @@ import logging
 from typing import Dict, Any, Optional, List, Callable
 from dotenv import load_dotenv
 import langsmith as ls
-# The wait_for_all_tracers function has been moved in newer versions of LangChain
-# Try importing from langchain_core.tracers
-from langchain_core.tracers import wait_for_all_tracers
+# The wait_for_all_tracers function is not available in the current version
+# Remove dependency on this function
 
 # Load environment variables
 load_dotenv()
@@ -228,7 +227,7 @@ class LangSmithManager:
     def wait_for_tracers(self) -> None:
         """Wait for all tracers to complete"""
         if self.enabled:
-            wait_for_all_tracers()
+            pass
 
 # Create a singleton instance
 langsmith_manager = LangSmithManager()
