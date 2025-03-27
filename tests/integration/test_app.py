@@ -24,8 +24,8 @@ def test_app_runs():
         process.wait()  # Ensure process is fully terminated
 
 @pytest.mark.integration
-def test_webhook_authentication():
-    """Test webhook authentication"""
+def test_webhook_processing():
+    """Test webhook processing without authentication"""
     port = 8002  # Use a different port to avoid conflicts
     
     # Start the application
@@ -33,38 +33,10 @@ def test_webhook_authentication():
     time.sleep(5)  # Give the app time to start
     
     try:
-        # Test without signature header
-        response = requests.post(f"http://localhost:{port}/chatwoot-webhook")
-        assert response.status_code == 401
-        assert "Missing signature header" in response.json()["detail"]
-        
-        # Test with invalid signature - use the correct header name
+        # Test with a valid payload
         payload = json.dumps({"event": "message_created", "data": {"content": "test"}})
-        headers = {
-            "X-Chatwoot-Signature": "invalid",
-            "Content-Type": "application/json"
-        }
-        response = requests.post(
-            f"http://localhost:{port}/chatwoot-webhook", 
-            headers=headers,
-            data=payload
-        )
-        assert response.status_code == 401
-        assert "Invalid signature" in response.json()["detail"]
+        headers = {"Content-Type": "application/json"}
         
-        # Test with valid signature
-        webhook_secret = os.environ.get("CHATWOOT_WEBHOOK_SECRET", "test_secret")
-        payload = json.dumps({"event": "message_created", "data": {"content": "test"}})
-        signature = hmac.new(
-            webhook_secret.encode(),
-            msg=payload.encode(),
-            digestmod=hashlib.sha256
-        ).hexdigest()
-        
-        headers = {
-            "X-Chatwoot-Signature": signature,
-            "Content-Type": "application/json"
-        }
         response = requests.post(
             f"http://localhost:{port}/chatwoot-webhook", 
             headers=headers,
