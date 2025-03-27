@@ -85,18 +85,16 @@ class TracingManager:
             return None
             
         try:
-            trace = self.tracer.new_trace(name=name)
-            trace_id = trace.id
-            
-            # Add inputs and metadata
-            if inputs:
-                self.client.create_run_inputs(trace_id, inputs)
-            
-            if metadata:
-                self.client.update_run_metadata(trace_id, metadata)
-                
-            if tags:
-                self.client.update_run_tags(trace_id, tags)
+            # Use the langsmith client directly to create a run
+            run = self.client.create_run(
+                name=name,
+                inputs=inputs or {},
+                run_type="chain",
+                project_name=self.project_name,
+                tags=tags or [],
+                metadata=metadata or {}
+            )
+            trace_id = run.id
                 
             logger.debug(f"Created trace: {trace_id}")
             return trace_id
@@ -124,11 +122,18 @@ class TracingManager:
             
         try:
             if error:
-                self.client.update_run_error(trace_id, error)
-            elif outputs:
-                self.client.create_run_outputs(trace_id, outputs)
+                self.client.update_run(
+                    run_id=trace_id,
+                    error=error,
+                    end_time=datetime.now()
+                )
+            else:
+                self.client.update_run(
+                    run_id=trace_id,
+                    outputs=outputs or {},
+                    end_time=datetime.now()
+                )
                 
-            self.client.update_run_end_time(trace_id, datetime.now())
             logger.debug(f"Ended trace: {trace_id}")
             return True
         except Exception as e:
