@@ -12,7 +12,7 @@ from datetime import datetime
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain.chains import LLMChain
-from langchain_openai import ChatOpenAI
+from langchain.chat_models import ChatOpenAI as DeepSeekChat
 from langsmith import Client
 from langsmith.run_helpers import traceable
 
@@ -73,9 +73,9 @@ class IntentClassifier:
             model_name: The name of the LLM model to use
             temperature: The temperature parameter for the LLM
         """
-        self.model_name = model_name or os.getenv("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
+        self.model_name = model_name or os.getenv("DEEPSEEK_MODEL_NAME", "deepseek-reasoner")
         self.temperature = temperature
-        self.llm = ChatOpenAI(model_name=self.model_name, temperature=self.temperature)
+        self.llm = DeepSeekChat(model_name=self.model_name, temperature=self.temperature)
         self.langsmith_client = Client()
         self.feedback_data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 
                                               "data", "intent_feedback.json")
@@ -117,8 +117,8 @@ class IntentClassifier:
         self.parser = JsonOutputParser()
         self.chain = prompt | self.llm | self.parser
         
-        # Prepare the chain with examples - updated for newer LangChain versions
-        self.chain = self.chain.with_config({"configurable": {"examples": examples_text}})
+        # Prepare the chain with examples - use bind instead of with_variables
+        self.chain = self.chain.bind(examples=examples_text)
     
     def _load_feedback_data(self):
         """Load feedback data from file if it exists."""
