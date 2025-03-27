@@ -12,7 +12,8 @@ from dotenv import load_dotenv
 import langsmith as ls
 from langchain_community.callbacks.tracers import LangChainTracer
 from langchain_core.callbacks.manager import CallbackManager
-from langchain_core.schema import LLMResult, AgentAction, AgentFinish
+from langchain_core.outputs import LLMResult
+from langchain_core.agents import AgentAction, AgentFinish
 
 # Load environment variables
 load_dotenv()
