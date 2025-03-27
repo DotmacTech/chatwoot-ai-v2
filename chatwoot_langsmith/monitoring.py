@@ -64,7 +64,7 @@ class TracingManager:
         if not self.enabled:
             return None
             
-        return CallbackManager(handlers=[self.tracer])
+        return CallbackManager.configure(handlers=[self.tracer])
     
     def create_trace(self, 
                     name: str, 

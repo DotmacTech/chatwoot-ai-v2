@@ -78,9 +78,10 @@ class IntentClassifier:
         self.temperature = temperature
         # Update to use ChatDeepSeek with proper API key
         self.llm = ChatDeepSeek(
-            model_name=self.model_name, 
+            model=self.model_name, 
             temperature=self.temperature,
-            api_key=os.getenv("DEEPSEEK_API_KEY")
+            openai_api_key=os.getenv("DEEPSEEK_API_KEY"),
+            openai_api_base="https://api.deepseek.com/v1"
         )
         self.langsmith_client = Client()
         self.feedback_data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 

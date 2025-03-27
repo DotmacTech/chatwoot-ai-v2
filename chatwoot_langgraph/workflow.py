@@ -10,7 +10,7 @@ from enum import Enum
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_core.output_parsers import StrOutputParser
-from langchain_community.chat_models import ChatOpenAI as DeepSeekChat
+from langchain_deepseek import ChatDeepSeek
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
@@ -177,7 +177,7 @@ Always maintain a helpful, professional tone while addressing the customer's nee
         logger.error("DEEPSEEK_API_KEY environment variable not set!")
         raise ValueError("Missing API key for DeepSeek")
     
-    return DeepSeekChat(
+    return ChatDeepSeek(
         model=model_name,
         temperature=temperature,
         openai_api_key=os.getenv("DEEPSEEK_API_KEY"),
@@ -195,7 +195,7 @@ def analyze_sentiment(message: str) -> SentimentAnalysis:
         ("human", "{message}")
     ])
     
-    sentiment_model = DeepSeekChat(
+    sentiment_model = ChatDeepSeek(
         model="deepseek-reasoner",
         temperature=0.1,
         openai_api_key=os.getenv("DEEPSEEK_API_KEY"),
