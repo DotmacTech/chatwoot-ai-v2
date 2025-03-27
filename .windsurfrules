@@ -1,0 +1,2 @@
+I want only 1 task at a time.
+Remember this is our target flow, [Customer] → [Chatwoot] → [LangSmith] → [LangGraph Workflow] → [Specialized Agents] → [Backend APIs] → [Response Generation] → [LangSmith] → [Chatwoot] → [Customer]
