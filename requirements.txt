@@ -19,3 +19,6 @@ requests-mock>=1.11.0
 
 # Optional dependencies - uncomment if needed
 # langchain-openai>=0.0.2
+langchain_deepseek
+langchain_community
+langgraph
