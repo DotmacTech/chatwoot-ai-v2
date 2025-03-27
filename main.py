@@ -32,7 +32,8 @@ async def webhook(request: Request):
     """
     # Process webhook payload directly
     payload = await request.json()
-    return await process_webhook(payload)
+    result = await process_webhook(payload)
+    return result
 
 @app.get("/health")
 async def health_check():

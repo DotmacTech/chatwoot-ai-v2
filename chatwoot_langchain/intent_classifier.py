@@ -146,7 +146,7 @@ class IntentClassifier:
             json.dump(self.feedback_data, f, indent=2)
     
     @traceable(run_type="llm")
-    def classify_intent(self, message: str) -> Dict[str, Any]:
+    async def classify_intent(self, message: str) -> Dict[str, Any]:
         """
         Classify the intent of a customer message.
         
@@ -157,7 +157,7 @@ class IntentClassifier:
             A dictionary containing the classification results
         """
         try:
-            result = self.chain.invoke({"message": message})
+            result = await self.chain.ainvoke({"message": message})
             
             # Ensure the result has all required fields
             if not all(key in result for key in ["intent", "confidence", "reasoning", "suggested_response"]):

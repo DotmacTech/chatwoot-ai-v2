@@ -226,7 +226,7 @@ class ChatwootHandler:
             estimated_cost = self.cost_monitor.estimate_cost(input_tokens=input_tokens, output_tokens=100)
             
             # Classify the intent of the message
-            classification = intent_classifier.classify_intent(message_content)
+            classification = await intent_classifier.classify_intent(message_content)
             
             # Update conversation custom attributes with intent classification
             custom_attributes = conversation.get("custom_attributes", {})
