@@ -31,6 +31,9 @@ jobs:
     
     - name: Run tests
       env:
+        DEEPSEEK_API_KEY: ${{ secrets.TEST_DEEPSEEK_API_KEY }}
+        CHATWOOT_API_KEY: ${{ secrets.TEST_CHATWOOT_API_KEY }}
+        LANGCHAIN_API_KEY: ${{ secrets.TEST_LANGCHAIN_API_KEY }}
         TEST_DEEPSEEK_API_KEY: ${{ secrets.TEST_DEEPSEEK_API_KEY }}
         TEST_CHATWOOT_API_KEY: ${{ secrets.TEST_CHATWOOT_API_KEY }}
         TEST_LANGCHAIN_API_KEY: ${{ secrets.TEST_LANGCHAIN_API_KEY }}
