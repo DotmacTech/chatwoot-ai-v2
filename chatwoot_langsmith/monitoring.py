@@ -5,13 +5,14 @@ Provides detailed tracing, metrics collection, and monitoring capabilities.
 import os
 import time
 import logging
+import asyncio
 from typing import Dict, Any, Optional, List, Callable, Union
 from datetime import datetime
 from dotenv import load_dotenv
 import langsmith as ls
-from langchain.callbacks.tracers import LangChainTracer
-from langchain.callbacks.manager import CallbackManager
-from langchain.schema import LLMResult, AgentAction, AgentFinish
+from langchain_community.callbacks.tracers import LangChainTracer
+from langchain_community.callbacks.manager import CallbackManager
+from langchain_core.schema import LLMResult, AgentAction, AgentFinish
 
 # Load environment variables
 load_dotenv()
@@ -94,6 +95,12 @@ class TracingManager:
                 tags=tags or [],
                 metadata=metadata or {}
             )
+            
+            # Check if run is None or doesn't have an id attribute
+            if run is None or not hasattr(run, 'id'):
+                logger.error("LangSmith client returned None or invalid run object for create_run")
+                return None
+                
             trace_id = run.id
                 
             logger.debug(f"Created trace: {trace_id}")
@@ -140,7 +147,7 @@ class TracingManager:
             logger.error(f"Error ending trace: {e}")
             return False
     
-    def trace_function(self, 
+    async def trace_function(self, 
                       name: str, 
                       func: Callable, 
                       *args, 
@@ -148,7 +155,7 @@ class TracingManager:
                       tags: List[str] = None, 
                       **kwargs) -> Any:
         """
-        Trace a function execution
+        Trace a function execution (supports both sync and async functions)
         
         Args:
             name: Name of the trace
@@ -174,8 +181,13 @@ class TracingManager:
         )
         
         try:
-            # Execute function
-            result = func(*args, **kwargs)
+            # Check if the function is a coroutine function and execute accordingly
+            if asyncio.iscoroutinefunction(func):
+                # Execute async function
+                result = await func(*args, **kwargs)
+            else:
+                # Execute sync function
+                result = func(*args, **kwargs)
             
             # Record success and end trace
             self.metrics["successful_requests"] += 1
@@ -195,7 +207,7 @@ class TracingManager:
             
             # Re-raise the exception
             raise
-    
+        
     def record_token_usage(self, tokens: int, cost: float = None) -> None:
         """
         Record token usage and cost
@@ -258,39 +270,75 @@ class TracingManager:
             Decorated function
         """
         def decorator(func):
-            def wrapper(*args, **kwargs):
-                if not self.enabled:
-                    return func(*args, **kwargs)
-                
-                # Use function name if name not provided
-                trace_name = name or func.__name__
-                
-                # Create trace
-                trace_id = self.create_trace(
-                    name=trace_name,
-                    inputs={"args": str(args), "kwargs": str(kwargs)},
-                    metadata=metadata,
-                    tags=tags
-                )
-                
-                try:
-                    # Execute function
-                    result = func(*args, **kwargs)
+            # Check if the function is async
+            if asyncio.iscoroutinefunction(func):
+                async def async_wrapper(*args, **kwargs):
+                    if not self.enabled:
+                        return await func(*args, **kwargs)
                     
-                    # End trace with success
-                    if trace_id:
-                        self.end_trace(trace_id, outputs={"result": str(result)})
+                    # Use function name if name not provided
+                    trace_name = name or func.__name__
                     
-                    return result
-                except Exception as e:
-                    # End trace with error
-                    if trace_id:
-                        self.end_trace(trace_id, error=str(e))
+                    # Create trace
+                    trace_id = self.create_trace(
+                        name=trace_name,
+                        inputs={"args": str(args), "kwargs": str(kwargs)},
+                        metadata=metadata,
+                        tags=tags
+                    )
                     
-                    # Re-raise the exception
-                    raise
-            
-            return wrapper
+                    try:
+                        # Execute async function
+                        result = await func(*args, **kwargs)
+                        
+                        # End trace with success
+                        if trace_id:
+                            self.end_trace(trace_id, outputs={"result": str(result)})
+                        
+                        return result
+                    except Exception as e:
+                        # End trace with error
+                        if trace_id:
+                            self.end_trace(trace_id, error=str(e))
+                        
+                        # Re-raise the exception
+                        raise
+                
+                return async_wrapper
+            else:
+                def sync_wrapper(*args, **kwargs):
+                    if not self.enabled:
+                        return func(*args, **kwargs)
+                    
+                    # Use function name if name not provided
+                    trace_name = name or func.__name__
+                    
+                    # Create trace
+                    trace_id = self.create_trace(
+                        name=trace_name,
+                        inputs={"args": str(args), "kwargs": str(kwargs)},
+                        metadata=metadata,
+                        tags=tags
+                    )
+                    
+                    try:
+                        # Execute function
+                        result = func(*args, **kwargs)
+                        
+                        # End trace with success
+                        if trace_id:
+                            self.end_trace(trace_id, outputs={"result": str(result)})
+                        
+                        return result
+                    except Exception as e:
+                        # End trace with error
+                        if trace_id:
+                            self.end_trace(trace_id, error=str(e))
+                        
+                        # Re-raise the exception
+                        raise
+                
+                return sync_wrapper
         
         return decorator
 

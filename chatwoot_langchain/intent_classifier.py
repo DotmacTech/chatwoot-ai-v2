@@ -11,7 +11,7 @@ import json
 from datetime import datetime
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
-from langchain.chains import LLMChain
+from langchain_core.chains import LLMChain
 # Fix the class name to match what's available in the package
 from langchain_deepseek import ChatDeepSeek
 from langsmith import Client
