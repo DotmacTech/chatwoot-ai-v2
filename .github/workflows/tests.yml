@@ -31,17 +31,7 @@ jobs:
     - name: Run tests
       env:
         TEST_DEEPSEEK_API_KEY: ${{ secrets.TEST_DEEPSEEK_API_KEY }}
-        TEST_CHATWOOT_API_TOKEN: ${{ secrets.TEST_CHATWOOT_API_TOKEN }}
+        TEST_CHATWOOT_API_KEY: ${{ secrets.TEST_CHATWOOT_API_KEY }}
         TEST_LANGCHAIN_API_KEY: ${{ secrets.TEST_LANGCHAIN_API_KEY }}
-        TEST_CHATWOOT_WEBHOOK_SECRET: ${{ secrets.TEST_CHATWOOT_WEBHOOK_SECRET }}
       run: |
-        pytest tests/ -v --cov=chatwoot_langgraph --cov-report=xml
-    
-    - name: Upload coverage to Codecov
-      if: github.event_name != 'pull_request'
-      uses: codecov/codecov-action@v3
-      with:
-        token: ${{ secrets.CODECOV_TOKEN }}
-        file: ./coverage.xml
-        flags: unittests
-        name: codecov-${{ github.ref }}
+        pytest tests/ -v
