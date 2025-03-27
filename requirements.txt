@@ -8,6 +8,7 @@ langsmith>=0.0.63  # Updated to be compatible with langchain
 openai>=1.6.1  # Updated to be compatible with langchain-openai
 langchain>=0.0.335
 langchain-core>=0.1.17
+langchain-community>=0.0.1  # Ensure consistent naming with hyphen
 requests>=2.31.0
 langchain-deepseek>=0.0.2  # Added for DeepSeek integration
 
@@ -19,6 +20,4 @@ requests-mock>=1.11.0
 
 # Optional dependencies - uncomment if needed
 # langchain-openai>=0.0.2
-langchain_deepseek
-langchain_community
-langgraph
+langgraph>=0.0.1
