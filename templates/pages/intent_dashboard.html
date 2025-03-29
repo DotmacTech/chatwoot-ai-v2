@@ -1,0 +1,186 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Intent Classification - Chatwoot AI{% endblock %}
+
+{% block content %}
+<div class="px-4 py-5 sm:px-6">
+    <h1 class="text-2xl font-semibold text-gray-900">Intent Classification</h1>
+    <p class="mt-1 text-sm text-gray-500">Test and monitor intent classification performance</p>
+</div>
+
+<div class="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+    <!-- Intent Testing -->
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 sm:p-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Test Intent Classification</h3>
+            <form id="intent-test-form" class="mt-4 space-y-4">
+                <div>
+                    <label for="test-message" class="block text-sm font-medium text-gray-700">Message</label>
+                    <textarea id="test-message" name="message" rows="4" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"></textarea>
+                </div>
+                <button type="submit" class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                    Classify Intent
+                </button>
+            </form>
+            <div id="classification-result" class="mt-4 hidden">
+                <h4 class="text-sm font-medium text-gray-900">Classification Result</h4>
+                <div class="mt-2 bg-gray-50 p-4 rounded-md">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <span class="text-sm font-medium text-gray-500">Intent</span>
+                            <div id="result-intent" class="mt-1 text-sm text-gray-900"></div>
+                        </div>
+                        <div>
+                            <span class="text-sm font-medium text-gray-500">Confidence</span>
+                            <div id="result-confidence" class="mt-1 text-sm text-gray-900"></div>
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <span class="text-sm font-medium text-gray-500">Reasoning</span>
+                        <div id="result-reasoning" class="mt-1 text-sm text-gray-900"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Intent Categories -->
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 sm:p-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Intent Categories</h3>
+            <div class="mt-4 space-y-4">
+                {% for intent, data in categories.items() %}
+                <div class="border-l-4 border-indigo-500 pl-4 py-2">
+                    <h4 class="text-sm font-medium text-gray-900">{{ intent | upper }}</h4>
+                    <p class="mt-1 text-sm text-gray-500">{{ data.description }}</p>
+                    <div class="mt-2">
+                        <span class="text-xs font-medium text-gray-500">Examples:</span>
+                        <ul class="mt-1 list-disc list-inside text-sm text-gray-500">
+                            {% for example in data.examples %}
+                            <li>{{ example }}</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-2">
+    <!-- Feedback Stats -->
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 sm:p-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Feedback Statistics</h3>
+            <div class="mt-4">
+                {% if stats.total_corrections %}
+                <div class="text-center">
+                    <span class="text-3xl font-bold text-indigo-600">{{ stats.total_corrections }}</span>
+                    <span class="block text-sm text-gray-500">Total Corrections</span>
+                </div>
+                <div class="mt-6">
+                    <h4 class="text-sm font-medium text-gray-900">Corrections by Category</h4>
+                    <div class="mt-2 space-y-2">
+                        {% for category, count in stats.corrections_by_category.items() %}
+                        <div>
+                            <div class="flex justify-between text-sm">
+                                <span class="text-gray-500">{{ category }}</span>
+                                <span class="text-gray-900">{{ count }}</span>
+                            </div>
+                            <div class="mt-1 w-full bg-gray-200 rounded-full h-2">
+                                <div class="bg-indigo-600 h-2 rounded-full" {% if stats.total_corrections %}style="width: {{ (count / stats.total_corrections * 100) | round(1) }}%"{% endif %}></div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% else %}
+                <p class="text-center text-sm text-gray-500">No feedback data available yet.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Confusion Matrix -->
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 sm:p-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Confusion Matrix</h3>
+            <div class="mt-4 overflow-x-auto">
+                {% if stats.confusion_matrix %}
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead>
+                        <tr>
+                            <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Original ↓ / Corrected →</th>
+                            {% for category in stats.categories %}
+                            <th scope="col" class="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">{{ category }}</th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+                        {% for original in stats.categories %}
+                        <tr>
+                            <th scope="row" class="px-3 py-2 text-left text-xs font-medium text-gray-500 bg-gray-50">{{ original }}</th>
+                            {% for corrected in stats.categories %}
+                            <td class="px-3 py-2 text-center text-sm {% if stats.confusion_matrix[original][corrected] > 0 %}font-medium text-indigo-600 bg-indigo-50{% else %}text-gray-500{% endif %}">
+                                {{ stats.confusion_matrix[original][corrected] or 0 }}
+                            </td>
+                            {% endfor %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p class="text-center text-sm text-gray-500">No confusion matrix data available yet.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('intent-test-form');
+    const messageInput = document.getElementById('test-message');
+    const resultDiv = document.getElementById('classification-result');
+    const resultIntent = document.getElementById('result-intent');
+    const resultConfidence = document.getElementById('result-confidence');
+    const resultReasoning = document.getElementById('result-reasoning');
+
+    form.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const message = messageInput.value.trim();
+        if (!message) return;
+        
+        try {
+            const response = await fetch('/estimate-intent', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ message })
+            });
+            
+            const data = await response.json();
+            if (data.status === 'ok') {
+                const result = data.classification;
+                
+                resultIntent.textContent = result.intent;
+                resultConfidence.textContent = `${(result.confidence * 100).toFixed(1)}%`;
+                resultReasoning.textContent = result.reasoning;
+                
+                resultDiv.classList.remove('hidden');
+            } else {
+                alert('Error: ' + data.message);
+            }
+        } catch (error) {
+            console.error('Error testing intent:', error);
+            alert('Error testing intent. Please try again.');
+        }
+    });
+});
+</script>
+{% endblock %}

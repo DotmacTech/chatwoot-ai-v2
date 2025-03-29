@@ -3,33 +3,25 @@ LangGraph workflow module for Chatwoot Automation.
 Defines the complete workflow with empathetic specialized agents.
 """
 import os
-import json
+import time
 import logging
-from typing import Dict, Any, Optional, List, TypedDict, Union, Literal
-from enum import Enum
-
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from langchain_core.output_parsers import StrOutputParser
-from langchain_deepseek import ChatDeepSeek
+from typing import Dict, List, Any, Optional, Union, TypedDict, Annotated
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langgraph.graph import StateGraph, END
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_deepseek import ChatDeepSeek
+from langgraph.graph import StateGraph, END, START
 from pydantic import BaseModel, Field
-
 from chatwoot_langsmith import tracing_manager
-from chatwoot_langchain import intent_classifier, INTENT_CATEGORIES
-# Comment out external integrations
-# from crm_integration import get_customer_info, update_customer_info
-# from network_monitoring import get_network_status, check_service_address
-# from billing_system import get_account_details, get_customer_invoices, get_payment_methods
+from chatwoot_langchain.intent_classifier import IntentClassifier
 
-# Configure logging
 logger = logging.getLogger(__name__)
 
-# Define state schema
+# Define the agent state
 class AgentState(TypedDict):
     """Full state for the agent workflow"""
-    # Conversation data
-    messages: List[Union[HumanMessage, AIMessage, SystemMessage]]
+    # Conversation data - using Annotated to handle multiple values correctly
+    messages: Annotated[List[Union[HumanMessage, AIMessage, SystemMessage]], "append_only"]
     full_conversation_history: List[Union[HumanMessage, AIMessage, SystemMessage]]
     
     # Customer and context info
@@ -62,590 +54,477 @@ class AgentState(TypedDict):
     # Analytics and metrics
     processing_time: Optional[float]
     token_usage: Optional[Dict[str, int]]
-
-# Define sentiment analysis model
-class SentimentAnalysis(BaseModel):
-    """Sentiment analysis of customer message"""
-    emotional_tone: str = Field(description="The primary emotional tone (frustrated, happy, neutral, anxious, confused, angry)")
-    urgency: int = Field(description="Urgency level from 1-5 where 5 is highest")
-    sentiment_score: float = Field(description="Overall sentiment from -1.0 (negative) to 1.0 (positive)")
-    key_concerns: List[str] = Field(description="List of main concerns or issues expressed")
-
-# Define agent types
-class AgentType(str, Enum):
-    """Types of specialized agents"""
-    ROUTER = "router"
-    SALES = "sales"
-    SUPPORT = "support"
-    ACCOUNT = "account"
-    GENERAL = "general"
-    VERIFICATION = "verification"
-    ONBOARDING = "onboarding"
-    RETENTION = "retention"
-
-# Define emotion-based response styles
-EMOTION_RESPONSE_STYLES = {
-    "frustrated": """Acknowledge their frustration immediately. Be brief, direct, and solution-focused. 
-                     Avoid corporate language. Show understanding but focus on concrete next steps.""",
     
-    "angry": """Remain calm and validating. Apologize sincerely if appropriate. Use phrases like 
-                "I completely understand why this is frustrating" and focus on immediate resolution paths.""",
+    # New field to store the latest message for processing
+    current_message: Optional[str]
     
-    "anxious": """Use a reassuring tone. Provide clear, step-by-step information. Avoid ambiguity.
-                  Give timeframes when possible and set clear expectations about what will happen next.""",
-    
-    "confused": """Use simple, clear language. Break down complex concepts. Confirm understanding 
-                   at each step and ask if further clarification is needed.""",
-    
-    "happy": """Match their positive energy. Be conversational and personable. Look for opportunities 
-                to highlight additional benefits or services they might enjoy.""",
-    
-    "neutral": """Be professional and efficient while maintaining warmth. Balance thoroughness with brevity.
-                  Focus on providing complete information without unnecessary details."""
-}
-
-# Create specialized agents
-def create_agent(agent_type: AgentType, model_name: str = "deepseek-reasoner", temperature: float = 0.3, emotion: str = "neutral"):
-    """Create a specialized agent with appropriate system prompt and emotional awareness"""
-    
-    # Base system prompts
-    base_prompts = {
-        AgentType.ROUTER: """You are an intelligent routing agent for an Internet Service Provider.
-            Your job is to understand customer inquiries and route them to the appropriate specialized team.
-            Carefully analyze the full context of the conversation to determine the most appropriate classification.""",
-        
-        AgentType.SALES: """You are a helpful, empathetic sales advisor for an Internet Service Provider.
-            Your goal is to understand customer needs and help them find the perfect internet plan or upgrade.
-            Provide accurate information about plans, pricing, promotions, and availability.
-            Create a positive experience that builds trust while addressing their specific requirements.""",
-        
-        AgentType.SUPPORT: """You are a technical support specialist for an Internet Service Provider.
-            Help customers troubleshoot and resolve internet connectivity issues with patience and clarity.
-            Use a systematic approach to diagnose problems, starting with simple solutions before suggesting
-            more complex fixes. Explain technical concepts in accessible language and provide step-by-step instructions.""",
-        
-        AgentType.ACCOUNT: """You are an account management specialist for an Internet Service Provider.
-            Help customers with billing inquiries, account updates, service changes, and payment arrangements.
-            Be detail-oriented and thorough while maintaining a friendly, helpful demeanor.
-            Ensure customers understand their billing, services, and account options.""",
-        
-        AgentType.VERIFICATION: """You are a verification specialist for an Internet Service Provider.
-            Your role is to verify customer identities securely and efficiently.
-            Be thorough but respectful of customer privacy. Follow all security protocols
-            while maintaining a helpful, patient demeanor.""",
-        
-        AgentType.ONBOARDING: """You are an onboarding specialist for an Internet Service Provider.
-            Guide new customers through setting up their service, equipment installation, and initial configuration.
-            Be thorough, patient, and provide clear step-by-step instructions.
-            Ensure customers feel confident using their new service.""",
-        
-        AgentType.RETENTION: """You are a customer retention specialist for an Internet Service Provider.
-            Your goal is to understand customer concerns that might lead to cancellation and find solutions
-            that address their needs while maintaining their business. Be empathetic, solution-oriented,
-            and focus on the value proposition of continued service.""",
-        
-        AgentType.GENERAL: """You are a helpful customer service agent for an Internet Service Provider.
-            Provide accurate, helpful information about our services, policies, and procedures.
-            Be warm, professional, and focused on resolving customer inquiries efficiently."""
-    }
-    
-    # Get the base prompt for this agent type
-    base_prompt = base_prompts.get(agent_type, base_prompts[AgentType.GENERAL])
-    
-    # Get the emotional response style
-    emotion_style = EMOTION_RESPONSE_STYLES.get(emotion, EMOTION_RESPONSE_STYLES["neutral"])
-    
-    # Combine the base prompt with emotional guidance
-    system_prompt = f"""{base_prompt}
-
-EMOTIONAL CONTEXT:
-The customer appears to be feeling {emotion}. {emotion_style}
-
-COMMUNICATION GUIDELINES:
-- Be empathetic and responsive to the customer's emotional state
-- Use natural, conversational language rather than scripted responses
-- Focus on understanding and resolving their specific situation
-- Be precise with technical information but explain it clearly
-- When you don't know something, be honest and explain how you'll help them get the information
-- If the issue requires human intervention, acknowledge this respectfully
-
-Always maintain a helpful, professional tone while addressing the customer's needs and emotional state.
-"""
-    
-    # Check for API key
-    if not os.getenv("DEEPSEEK_API_KEY"):
-        logger.error("DEEPSEEK_API_KEY environment variable not set!")
-        raise ValueError("Missing API key for DeepSeek")
-    
-    return ChatDeepSeek(
-        model=model_name,
-        temperature=temperature,
-        openai_api_key=os.getenv("DEEPSEEK_API_KEY"),
-        openai_api_base="https://api.deepseek.com/v1",
-        max_tokens=4096
-    ).bind(system=system_prompt)
-
-# Create sentiment analysis function
-def analyze_sentiment(message: str) -> SentimentAnalysis:
-    """Analyze the sentiment of a customer message"""
-    sentiment_prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are an expert at analyzing customer sentiment in messages.
-                     Analyze the emotional tone, urgency, and overall sentiment of the message.
-                     Identify key concerns or issues being expressed."""),
-        ("human", "{message}")
-    ])
-    
-    sentiment_model = ChatDeepSeek(
-        model="deepseek-reasoner",
-        temperature=0.1,
-        openai_api_key=os.getenv("DEEPSEEK_API_KEY"),
-        openai_api_base="https://api.deepseek.com/v1"
-    )
-    
-    sentiment_chain = sentiment_prompt | sentiment_model | StrOutputParser()
-    
-    try:
-        sentiment_json = sentiment_chain.invoke({"message": message})
-        sentiment_data = json.loads(sentiment_json)
-        return SentimentAnalysis(**sentiment_data)
-    except (json.JSONDecodeError, Exception) as e:
-        logger.error(f"Error analyzing sentiment: {str(e)}")
-        # Return default neutral sentiment
-        return SentimentAnalysis(
-            emotional_tone="neutral",
-            urgency=2,
-            sentiment_score=0.0,
-            key_concerns=["general inquiry"]
-        )
+    # Temporary field to store a new message before appending to messages
+    new_message: Optional[Union[HumanMessage, AIMessage, SystemMessage]]
 
 # Define workflow nodes
-def initial_analysis(state: AgentState) -> AgentState:
+async def initial_analysis(state: AgentState) -> AgentState:
     """Process incoming message with sentiment analysis and entity extraction"""
-    # Find the latest user message
-    latest_message = ""
-    for msg in reversed(state["messages"]):
-        if isinstance(msg, HumanMessage):
-            latest_message = msg.content
-            break
+    # Create trace for this operation
+    trace_id = tracing_manager.create_trace(
+        name="initial_analysis",
+        inputs={"state": state},
+        tags=["workflow", "analysis"]
+    )
     
-    if not latest_message:
-        return {**state, "next_step": "verification_check"}
-    
-    # Analyze sentiment
-    sentiment = analyze_sentiment(latest_message)
-    
-    # Extract entities (simplified - would use NER in production)
-    entities = {
-        "account_number": None,
-        "phone_number": None,
-        "address": None,
-        "service_type": None,
-        "product_mention": None
-    }
-    
-    # Quick message templates based on sentiment
-    urgency_level = sentiment.urgency
-    emotional_tone = sentiment.emotional_tone
-    
-    # Send immediate acknowledgment based on sentiment
-    acknowledgments = {
-        "angry": "I understand you're frustrated right now. I'm here to help resolve this situation as quickly as possible.",
-        "frustrated": "I can see this has been challenging. Let me help you get this sorted out right away.",
-        "anxious": "I understand your concern. Let me get the information you need to put your mind at ease.",
-        "confused": "I'd be happy to clear things up for you. Let's go through this step by step.",
-        "happy": "Thanks for your message! I'm glad to help you today.",
-        "neutral": "Thank you for contacting our ISP support. I'll help you with your request."
-    }
-    
-    acknowledgment = acknowledgments.get(emotional_tone, acknowledgments["neutral"])
-    
-    # If urgent, add urgency response
-    if urgency_level >= 4:
-        acknowledgment += " I can see this is urgent, so I'll prioritize your request."
-    
-    # Create the response
-    response = AIMessage(content=acknowledgment)
-    
-    # Update state with all analysis
-    return {
-        **state,
-        "messages": state["messages"] + [response],
-        "sentiment": {
-            "emotional_tone": emotional_tone,
-            "urgency": urgency_level,
-            "sentiment_score": sentiment.sentiment_score,
-            "key_concerns": sentiment.key_concerns
-        },
-        "entities": entities,
-        "next_step": "verification_check"
-    }
-
-def verification_check(state: AgentState) -> AgentState:
-    """Check if the customer needs verification"""
-    customer_id = state.get("customer_id")
-    contact_info = state.get("contact_info")
-    
-    # If already verified, move on
-    if state.get("verified"):
-        return {**state, "next_step": "intent_classification"}
-    
-    # If we have customer ID but not verified, retrieve info
-    if customer_id and not state.get("customer_info"):
-        try:
-            customer_info = get_customer_info(customer_id)
-            if customer_info:
-                return {
-                    **state,
-                    "customer_info": customer_info,
-                    "verified": True,
-                    "next_step": "intent_classification"
-                }
-        except Exception as e:
-            logger.error(f"Error retrieving customer info: {str(e)}")
-    
-    # If we have contact info, try to find customer
-    if contact_info and not customer_id:
-        try:
-            # This would call your CRM to find customers by contact
-            customer_matches = find_customers_by_contact(contact_info)
+    try:
+        logger.info("Starting initial analysis of customer message")
+        
+        # Get the current message from state
+        message = state["current_message"]
+        if not message:
+            logger.warning("No current message found in state")
+            return state
             
-            if len(customer_matches) == 1:
-                # Single match found
-                customer = customer_matches[0]
-                return {
-                    **state,
-                    "customer_id": customer["id"],
-                    "customer_info": customer,
-                    "verified": True,
-                    "next_step": "intent_classification"
-                }
-            elif len(customer_matches) > 1:
-                # Multiple matches, need manual verification
-                return {
-                    **state,
-                    "verified": False,
-                    "needs_human_review": True,
-                    "human_review_reason": "Multiple matching customer records",
-                    "next_step": "verification_agent"
-                }
-        except Exception as e:
-            logger.error(f"Error finding customer by contact: {str(e)}")
-    
-    # If no matches or errors, go to verification agent
-    return {**state, "next_step": "verification_agent"}
-
-def verification_agent(state: AgentState) -> AgentState:
-    """Handle customer verification when needed"""
-    # Use the verification agent with appropriate emotional context
-    emotional_tone = state.get("sentiment", {}).get("emotional_tone", "neutral")
-    agent = create_agent(AgentType.VERIFICATION, emotion=emotional_tone)
-    
-    # Add verification context to messages
-    context_message = SystemMessage(content=f"""
-    This customer needs verification. Current verification status: {state.get('verified', False)}
-    Verification attempts: {state.get('verification_attempts', 0)}
-    Contact info: {state.get('contact_info')}
-    """)
-    
-    messages = state["messages"] + [context_message]
-    response = agent.invoke(messages)
-    
-    # Update verification attempts
-    verification_attempts = state.get("verification_attempts", 0) + 1
-    
-    # If too many attempts, escalate to human
-    needs_human = verification_attempts >= 3
-    human_reason = "Multiple failed verification attempts" if needs_human else state.get("human_review_reason")
-    
-    # Determine next step based on verification status
-    next_step = "human_handoff" if needs_human else "intent_classification"
-    
-    return {
-        **state,
-        "messages": state["messages"] + [response],
-        "verification_attempts": verification_attempts,
-        "needs_human_review": needs_human or state.get("needs_human_review", False),
-        "human_review_reason": human_reason,
-        "next_step": next_step
-    }
-
-def intent_classification(state: AgentState) -> AgentState:
-    """Classify the customer's intent and sub-intent"""
-    # Find the latest user messages (use more context for better classification)
-    user_messages = []
-    for msg in state["messages"]:
-        if isinstance(msg, HumanMessage):
-            user_messages.append(msg.content)
-    
-    combined_message = " ".join(user_messages[-3:])  # Last 3 messages for context
-    
-    # Classify intent
-    classification = intent_classifier.classify_intent(combined_message)
-    intent = classification.get("intent", "general")
-    sub_intent = classification.get("sub_intent")
-    confidence = classification.get("confidence", 0.0)
-    
-    # Retrieve relevant data based on intent
-    customer_id = state.get("customer_id")
-    service_info = None
-    account_status = None
-    billing_data = None
-    
-    if customer_id and state.get("verified"):
-        try:
-            if intent == "support":
-                # Get service info for support queries
-                service_info = get_service_information(customer_id)
-            
-            elif intent == "account" or intent == "billing":
-                # Get account and billing info
-                account_status = get_account_details(customer_id)
-                billing_data = get_customer_invoices(customer_id)
-        except Exception as e:
-            logger.error(f"Error retrieving customer data: {str(e)}")
-    
-    # Determine if human review is needed
-    needs_human = state.get("needs_human_review", False)
-    human_reason = state.get("human_review_reason")
-    
-    # Low confidence should trigger human review
-    if confidence < 0.7 and not needs_human:
-        needs_human = True
-        human_reason = f"Low confidence intent classification: {intent} ({confidence:.2f})"
-    
-    # Determine next step based on intent and human review status
-    next_step = "human_handoff" if needs_human else intent
-    
-    return {
-        **state,
-        "intent": intent,
-        "sub_intent": sub_intent,
-        "intent_confidence": confidence,
-        "service_info": service_info,
-        "account_status": account_status,
-        "billing_data": billing_data,
-        "needs_human_review": needs_human,
-        "human_review_reason": human_reason,
-        "next_step": next_step
-    }
-
-def process_by_specialized_agent(agent_type: str):
-    """Generate a function to process messages with a specialized agent"""
-    def process_fn(state: AgentState) -> AgentState:
-        # Get emotional context
-        emotional_tone = state.get("sentiment", {}).get("emotional_tone", "neutral")
+        # Create a copy of the state to avoid modifying the original
+        updated_state = state.copy()
         
-        # Create agent with appropriate emotion handling
-        agent = create_agent(getattr(AgentType, agent_type.upper()), emotion=emotional_tone)
+        # Create the new message but don't append it to messages yet
+        # Store it in a temporary field for the next node to handle
+        new_message = HumanMessage(content=message)
+        updated_state["new_message"] = new_message
         
-        # Add context data for the agent
-        context_data = {
-            "customer_info": state.get("customer_info"),
-            "service_info": state.get("service_info"),
-            "account_status": state.get("account_status"),
-            "billing_data": state.get("billing_data"),
-            "intent": state.get("intent"),
-            "sub_intent": state.get("sub_intent")
-        }
+        # Do sentiment analysis and entity extraction if needed
+        # For now, just setting placeholder values
+        updated_state["sentiment"] = {"sentiment": "neutral", "intensity": 0.5}
+        updated_state["entities"] = {}
         
-        # Create a context message
-        context_message = SystemMessage(content=f"""
-        CUSTOMER CONTEXT:
-        Intent: {context_data['intent']} / {context_data['sub_intent']}
-        Verified: {state.get('verified', False)}
-        Customer ID: {state.get('customer_id', 'Unknown')}
+        # Set next step
+        updated_state["current_step"] = "append_message"
         
-        Please provide a helpful, empathetic response to this customer's needs.
-        """)
+        # End trace with success
+        tracing_manager.end_trace(trace_id, outputs={"state": updated_state})
         
-        # Add context to the messages
-        messages = state["messages"] + [context_message]
+        return updated_state
+    except Exception as e:
+        logger.error(f"Error in initial analysis: {str(e)}", exc_info=True)
+        tracing_manager.end_trace(trace_id, error=str(e))
         
-        # Get response from agent
-        response = agent.invoke(messages)
-        
-        # Check if agent indicates need for human review
-        agent_requests_human = "human" in response.content.lower() and (
-            "transfer" in response.content.lower() or 
-            "escalate" in response.content.lower() or
-            "specialist" in response.content.lower()
-        )
-        
-        needs_human = state.get("needs_human_review", False) or agent_requests_human
-        human_reason = state.get("human_review_reason")
-        
-        if agent_requests_human and not state.get("needs_human_review"):
-            human_reason = f"Agent requested human assistance: {agent_type}"
-        
-        # Determine completion status
-        completion_status = "completed" if not needs_human else "transferred_to_human"
-        
-        next_step = "human_handoff" if needs_human else "end"
-        
+        # Return original state with error flag
         return {
             **state,
-            "messages": state["messages"] + [response],
-            "final_response": response.content,
-            "needs_human_review": needs_human,
-            "human_review_reason": human_reason,
-            "completion_status": completion_status,
-            "next_step": next_step
+            "needs_human_review": True,
+            "human_review_reason": f"Error in initial analysis: {str(e)}"
         }
-        
-    return process_fn
 
-def human_handoff(state: AgentState) -> AgentState:
-    """Prepare the conversation for human handoff with empathetic transition"""
-    # Get emotional context
-    emotional_tone = state.get("sentiment", {}).get("emotional_tone", "neutral")
-    urgency = state.get("sentiment", {}).get("urgency", 3)
+async def append_message(state: AgentState) -> AgentState:
+    """Append the new message to the messages list"""
+    # Create trace for this operation
+    trace_id = tracing_manager.create_trace(
+        name="append_message",
+        inputs={"state": state},
+        tags=["workflow", "append"]
+    )
     
-    # Create appropriate handoff message based on emotion and reason
-    reason = state.get("human_review_reason", "specialized assistance")
-    
-    handoff_templates = {
-        "angry": "I understand this is frustrating. I'm connecting you right away with a customer service specialist who can address this situation personally. They'll have all the context we've discussed.",
+    try:
+        # Create a copy of the state to avoid modifying the original
+        updated_state = state.copy()
         
-        "frustrated": "I can see this hasn't been resolved to your satisfaction yet. I'm going to connect you with a specialist who has additional tools to help with your specific situation.",
+        # Get the new message from the temporary field
+        new_message = updated_state.pop("new_message", None)
+        if not new_message:
+            logger.warning("No new message found in state")
+            return state
         
-        "anxious": "I want to make sure you get the exact information you need. Let me connect you with a dedicated specialist who can provide you with definitive answers and support.",
+        # Append the new message to the messages list
+        # Since messages is annotated as "append_only", we need to create a new list
+        # and then assign it to updated_state["messages"]
+        messages_copy = list(updated_state["messages"])
+        messages_copy.append(new_message)
+        updated_state["messages"] = messages_copy
         
-        "confused": "To make sure we get this right for you, I'm connecting you with one of our specialists who can walk through this step-by-step with you and answer all your questions.",
+        # Also update the full conversation history
+        history_copy = list(updated_state["full_conversation_history"])
+        history_copy.append(new_message)
+        updated_state["full_conversation_history"] = history_copy
         
-        "happy": "I'd like to connect you with one of our specialists who can provide even more personalized assistance with your request. They'll be with you shortly.",
+        # Set next step
+        updated_state["current_step"] = "intent_classification"
         
-        "neutral": "I'm connecting you with a specialist who can better assist you with this matter. They'll have access to all the information we've discussed."
-    }
-    
-    handoff_message = handoff_templates.get(emotional_tone, handoff_templates["neutral"])
-    
-    # For high urgency, add urgency acknowledgment
-    if urgency >= 4:
-        handoff_message += " Given the urgency of your situation, I've marked this as high priority."
-    
-    # Create the response
-    response = AIMessage(content=handoff_message)
-    
-    # Add helpful context for the human agent
-    human_agent_summary = f"""
-    CONVERSATION SUMMARY FOR AGENT:
-    Customer Sentiment: {emotional_tone} (Urgency: {urgency}/5)
-    Primary Intent: {state.get('intent')}
-    Sub-Intent: {state.get('sub_intent')}
-    Verified: {state.get('verified', False)}
-    Customer ID: {state.get('customer_id', 'Unknown')}
-    
-    Handoff Reason: {reason}
-    
-    Key Concerns: {', '.join(state.get('sentiment', {}).get('key_concerns', ['N/A']))}
-    """
-    
-    return {
-        **state,
-        "messages": state["messages"] + [response],
-        "final_response": handoff_message,
-        "human_agent_summary": human_agent_summary,
-        "completion_status": "transferred_to_human",
-        "next_step": "end"
-    }
+        # End trace with success
+        tracing_manager.end_trace(trace_id, outputs={"state": updated_state})
+        
+        return updated_state
+    except Exception as e:
+        logger.error(f"Error in append_message: {str(e)}", exc_info=True)
+        tracing_manager.end_trace(trace_id, error=str(e))
+        
+        # Return original state with error flag
+        return {
+            **state,
+            "needs_human_review": True,
+            "human_review_reason": f"Error in append_message: {str(e)}"
+        }
 
-# Define routing logic
-def determine_next_step(state: AgentState) -> str:
-    """Determine the next step in the workflow based on state"""
-    return state.get("next_step", "end")
+async def intent_classification(state: AgentState) -> AgentState:
+    """Classify the customer's intent and sub-intent"""
+    # Create trace for this operation
+    trace_id = tracing_manager.create_trace(
+        name="intent_classification",
+        inputs={"state": state},
+        tags=["workflow", "intent"]
+    )
+    
+    try:
+        logger.info("Classifying customer intent")
+        
+        # Create a copy of the state to avoid modifying the original
+        updated_state = state.copy()
+        
+        # Get the current message
+        message = state["current_message"]
+        if not message:
+            logger.warning("No current message found in state")
+            return state
+        
+        # Use the intent classifier to determine intent
+        # This is a placeholder for now
+        intent = "general_inquiry"
+        sub_intent = "information_request"
+        confidence = 0.85
+        
+        # Update state with intent information
+        updated_state["intent"] = intent
+        updated_state["sub_intent"] = sub_intent
+        updated_state["intent_confidence"] = confidence
+        
+        # Determine if human review is needed based on confidence
+        if confidence < 0.6:
+            updated_state["needs_human_review"] = True
+            updated_state["human_review_reason"] = "Low confidence in intent classification"
+        
+        # End trace with success
+        tracing_manager.end_trace(trace_id, outputs={"state": updated_state})
+        
+        return updated_state
+    except Exception as e:
+        logger.error(f"Error in intent classification: {str(e)}", exc_info=True)
+        tracing_manager.end_trace(trace_id, error=str(e))
+        
+        # Return original state with error flag
+        return {
+            **state,
+            "needs_human_review": True,
+            "human_review_reason": f"Error in intent classification: {str(e)}"
+        }
 
-# Build the workflow graph
-def build_workflow_graph():
-    """Build the complete workflow graph with specialized agents"""
-    # Create the graph
+async def specialized_agent(state: AgentState) -> AgentState:
+    """Process the customer request with a specialized agent based on intent"""
+    # Create trace for this operation
+    trace_id = tracing_manager.create_trace(
+        name="specialized_agent",
+        inputs={"state": state},
+        tags=["workflow", "agent"]
+    )
+    
+    try:
+        logger.info("Processing with specialized agent")
+        
+        # Create a copy of the state to avoid modifying the original
+        updated_state = state.copy()
+        
+        # Get conversation history for context
+        history = state.get("full_conversation_history", [])
+        
+        # Generate response
+        try:
+            # Create a system prompt based on intent
+            intent = state.get("intent", "general_inquiry")
+            
+            system_prompt = "You are a helpful AI assistant for our company."
+            if intent == "technical_support":
+                system_prompt = "You are a technical support specialist. Be precise and helpful."
+            elif intent == "billing_inquiry":
+                system_prompt = "You are a billing specialist. Be clear about policies and helpful."
+            elif intent == "complaint":
+                system_prompt = "You are a customer service specialist. Be empathetic and solution-oriented."
+            
+            # Set up the model - using DeepSeek instead of OpenAI
+            try:
+                model = ChatDeepSeek(
+                    model=os.getenv("DEEPSEEK_MODEL_NAME", "deepseek-chat"),
+                    temperature=0.7,
+                    openai_api_key=os.getenv("DEEPSEEK_API_KEY")
+                )
+                logger.info(f"Using DeepSeek model: {os.getenv('DEEPSEEK_MODEL_NAME', 'deepseek-chat')}")
+            except Exception as model_error:
+                logger.error(f"Error initializing DeepSeek model: {str(model_error)}")
+                # Create a simple fallback response without using an external model
+                updated_state["final_response"] = "I'm sorry, I'm having trouble accessing our AI service right now. Let me connect you with a human agent who can help."
+                updated_state["needs_human_review"] = True
+                updated_state["human_review_reason"] = f"Error initializing model: {str(model_error)}"
+                
+                # Create a new AI message but don't append it yet
+                ai_message = AIMessage(content=updated_state["final_response"])
+                updated_state["new_message"] = ai_message
+                updated_state["current_step"] = "append_response"
+                
+                # End trace and return early
+                tracing_manager.end_trace(trace_id, outputs={"state": updated_state})
+                return updated_state
+            
+            # Format history for the prompt - ensure proper interleaving for DeepSeek
+            # DeepSeek requires alternating human/AI messages
+            
+            # First, categorize messages by type
+            human_messages = []
+            ai_messages = []
+            system_messages = []
+            
+            for msg in history:
+                if isinstance(msg, HumanMessage):
+                    human_messages.append(msg)
+                elif isinstance(msg, AIMessage):
+                    ai_messages.append(msg)
+                elif isinstance(msg, SystemMessage):
+                    system_messages.append(msg)
+            
+            # Create a properly interleaved history
+            formatted_history = []
+            
+            # Add system messages first (if any)
+            formatted_history.extend(system_messages)
+            
+            # Interleave human and AI messages
+            # If we have more of one type than the other, we'll use only the most recent ones
+            # to ensure proper alternation
+            max_pairs = min(len(human_messages), len(ai_messages))
+            
+            # If we have human messages but no AI messages, we'll just use the human messages
+            if max_pairs == 0 and human_messages:
+                # Only include the most recent human message to avoid consecutive human messages
+                formatted_history.append(human_messages[-1])
+            else:
+                # Interleave the messages, starting with human (as per DeepSeek's requirements)
+                for i in range(max_pairs):
+                    # Use negative indices to get the most recent messages first
+                    h_idx = -(max_pairs - i)
+                    a_idx = -(max_pairs - i)
+                    
+                    formatted_history.append(human_messages[h_idx])
+                    formatted_history.append(ai_messages[a_idx])
+            
+            # Log the formatted history for debugging
+            logger.debug(f"Formatted history for DeepSeek: {len(formatted_history)} messages")
+            for i, msg in enumerate(formatted_history):
+                logger.debug(f"Message {i}: {type(msg).__name__}")
+            
+            # Create a custom prompt for DeepSeek
+            messages = []
+            
+            # Add the system message
+            messages.append(SystemMessage(content=system_prompt))
+            
+            # Add the formatted history
+            messages.extend(formatted_history)
+            
+            # Add the current message
+            messages.append(HumanMessage(content=state["current_message"]))
+            
+            # Generate the response directly with the model
+            response = await model.ainvoke(messages)
+            
+            # Extract the content from the response
+            response_content = response.content
+            
+            # Create a new AI message but don't append it yet
+            ai_message = AIMessage(content=response_content)
+            updated_state["new_message"] = ai_message
+            updated_state["final_response"] = response_content
+            
+            # Set next step
+            updated_state["current_step"] = "append_response"
+            
+        except Exception as agent_error:
+            logger.error(f"Error generating response: {str(agent_error)}", exc_info=True)
+            updated_state["needs_human_review"] = True
+            updated_state["human_review_reason"] = f"Error generating response: {str(agent_error)}"
+            updated_state["final_response"] = "I'm sorry, I encountered an issue processing your request. Let me connect you with a human agent who can help."
+            
+            # Create a new AI message but don't append it yet
+            ai_message = AIMessage(content=updated_state["final_response"])
+            updated_state["new_message"] = ai_message
+        
+        # End trace with success
+        tracing_manager.end_trace(trace_id, outputs={"state": updated_state})
+        
+        return updated_state
+    except Exception as e:
+        logger.error(f"Error in specialized agent: {str(e)}", exc_info=True)
+        tracing_manager.end_trace(trace_id, error=str(e))
+        
+        # Return original state with error flag
+        return {
+            **state,
+            "needs_human_review": True,
+            "human_review_reason": f"Error in specialized agent: {str(e)}",
+            "final_response": "I'm sorry, I encountered an issue processing your request. Let me connect you with a human agent who can help."
+        }
+
+async def append_response(state: AgentState) -> AgentState:
+    """Append the AI response to the messages list"""
+    # Create trace for this operation
+    trace_id = tracing_manager.create_trace(
+        name="append_response",
+        inputs={"state": state},
+        tags=["workflow", "append"]
+    )
+    
+    try:
+        # Create a copy of the state to avoid modifying the original
+        updated_state = state.copy()
+        
+        # Get the new message from the temporary field
+        new_message = updated_state.pop("new_message", None)
+        if not new_message:
+            logger.warning("No new AI message found in state")
+            return state
+        
+        # Append the new message to the messages list
+        # Since messages is annotated as "append_only", we need to create a new list
+        # and then assign it to updated_state["messages"]
+        messages_copy = list(updated_state["messages"])
+        messages_copy.append(new_message)
+        updated_state["messages"] = messages_copy
+        
+        # Also update the full conversation history
+        history_copy = list(updated_state["full_conversation_history"])
+        history_copy.append(new_message)
+        updated_state["full_conversation_history"] = history_copy
+        
+        # Set completion status
+        updated_state["completion_status"] = "completed"
+        
+        # End trace with success
+        tracing_manager.end_trace(trace_id, outputs={"state": updated_state})
+        
+        return updated_state
+    except Exception as e:
+        logger.error(f"Error in append_response: {str(e)}", exc_info=True)
+        tracing_manager.end_trace(trace_id, error=str(e))
+        
+        # Return original state with error flag
+        return {
+            **state,
+            "needs_human_review": True,
+            "human_review_reason": f"Error in append_response: {str(e)}"
+        }
+
+async def human_handoff(state: AgentState) -> AgentState:
+    """Prepare for handoff to human agent"""
+    # Create trace for this operation
+    trace_id = tracing_manager.create_trace(
+        name="human_handoff",
+        inputs={"state": state},
+        tags=["workflow", "handoff"]
+    )
+    
+    try:
+        logger.info("Preparing for human handoff")
+        
+        # Create a copy of the state to avoid modifying the original
+        updated_state = state.copy()
+        
+        # Generate a handoff message
+        handoff_reason = state.get("human_review_reason", "Automated handoff to human agent")
+        handoff_message = f"I'll connect you with a human agent who can better assist you. Reason: {handoff_reason}"
+        
+        # Set the final response
+        updated_state["final_response"] = handoff_message
+        
+        # Create a new AI message but don't append it yet
+        ai_message = AIMessage(content=handoff_message)
+        updated_state["new_message"] = ai_message
+        
+        # Set next step
+        updated_state["current_step"] = "append_response"
+        
+        # End trace with success
+        tracing_manager.end_trace(trace_id, outputs={"state": updated_state})
+        
+        return updated_state
+    except Exception as e:
+        logger.error(f"Error in human handoff: {str(e)}", exc_info=True)
+        tracing_manager.end_trace(trace_id, error=str(e))
+        
+        # Return original state with error flag
+        return {
+            **state,
+            "final_response": "I'm connecting you with a human agent who can help you further.",
+            "needs_human_review": True,
+            "human_review_reason": f"Error in human handoff: {str(e)}"
+        }
+
+def build_workflow_graph() -> StateGraph:
+    """Build the workflow graph with all nodes and edges"""
+    # Create the workflow graph
     workflow = StateGraph(AgentState)
     
     # Add nodes
     workflow.add_node("initial_analysis", initial_analysis)
-    workflow.add_node("verification_check", verification_check)
-    workflow.add_node("verification_agent", verification_agent)
+    workflow.add_node("append_message", append_message)
     workflow.add_node("intent_classification", intent_classification)
-    workflow.add_node("sales", process_by_specialized_agent("sales"))
-    workflow.add_node("support", process_by_specialized_agent("support"))
-    workflow.add_node("account", process_by_specialized_agent("account"))
-    workflow.add_node("general", process_by_specialized_agent("general"))
+    workflow.add_node("specialized_agent", specialized_agent)
+    workflow.add_node("append_response", append_response)
     workflow.add_node("human_handoff", human_handoff)
     
-    # Add edges
-    workflow.add_conditional_edges(
-        "initial_analysis",
-        determine_next_step,
-        {
-            "verification_check": "verification_check",
-            "end": END
-        }
-    )
+    # Define conditional routing based on state
+    def should_route_to_human(state: AgentState) -> str:
+        """Determine if we should route to human agent"""
+        if state.get("needs_human_review", False):
+            return "human_handoff"
+        return "specialized_agent"
     
-    workflow.add_conditional_edges(
-        "verification_check",
-        determine_next_step,
-        {
-            "verification_agent": "verification_agent",
-            "intent_classification": "intent_classification",
-            "human_handoff": "human_handoff",
-            "end": END
-        }
-    )
+    # Add START edge to the initial node
+    workflow.add_edge(START, "initial_analysis")
     
-    workflow.add_conditional_edges(
-        "verification_agent",
-        determine_next_step,
-        {
-            "intent_classification": "intent_classification",
-            "human_handoff": "human_handoff",
-            "end": END
-        }
-    )
-    
+    # Add edges between nodes
+    workflow.add_edge("initial_analysis", "append_message")
+    workflow.add_edge("append_message", "intent_classification")
     workflow.add_conditional_edges(
         "intent_classification",
-        determine_next_step,
-        {
-            "sales": "sales",
-            "support": "support",
-            "account": "account",
-            "general": "general",
-            "human_handoff": "human_handoff",
-            "end": END
-        }
+        should_route_to_human
     )
     
-    # Add edges from specialized agents
-    for agent_type in ["sales", "support", "account", "general"]:
-        workflow.add_conditional_edges(
-            agent_type,
-            determine_next_step,
-            {
-                "human_handoff": "human_handoff",
-                "end": END
-            }
-        )
+    # Add edge from specialized agent to append_response
+    workflow.add_edge("specialized_agent", "append_response")
     
-    # Human handoff to end
-    workflow.add_edge("human_handoff", END)
+    # Add edge from human handoff to append_response
+    workflow.add_edge("human_handoff", "append_response")
     
-    # Set entry point
-    workflow.set_entry_point("initial_analysis")
+    # Add edge from append_response to END
+    workflow.add_edge("append_response", END)
     
-    # Compile the graph
-    return workflow.compile()
+    return workflow
 
-# Create the workflow manager
 class WorkflowManager:
     """Manages the LangGraph workflow for customer interactions"""
     
     def __init__(self):
         """Initialize the workflow manager"""
-        self.workflow = build_workflow_graph()
-        logger.info("LangGraph workflow initialized")
+        try:
+            self.workflow = build_workflow_graph()
+            # Compile the workflow - this is required for newer LangGraph versions
+            if hasattr(self.workflow, 'compile'):
+                logger.info("Compiling LangGraph workflow...")
+                self.workflow = self.workflow.compile()
+            logger.info("LangGraph workflow initialized successfully")
+        except Exception as e:
+            logger.error(f"Error initializing LangGraph workflow: {str(e)}", exc_info=True)
+            # Still create the instance but mark it as failed
+            self.workflow = None
+            self.initialization_error = str(e)
     
-    def process_message(self, message: str, customer_id: str = None, conversation_id: str = None, 
-                         contact_info: str = None, prev_messages: List = None) -> Dict[str, Any]:
+    async def process_message(self, 
+                            message: str, 
+                            customer_id: str = None, 
+                            conversation_id: str = None,
+                            contact_info: str = None, 
+                            prev_messages: List = None) -> Dict[str, Any]:
         """
         Process a customer message through the workflow
         
@@ -659,83 +538,128 @@ class WorkflowManager:
         Returns:
             Dictionary with the processed response and metadata
         """
-        import time
-        start_time = time.time()
+        # Create trace for this operation
+        trace_id = tracing_manager.create_trace(
+            name="process_message",
+            inputs={
+                "message": message,
+                "customer_id": customer_id,
+                "conversation_id": conversation_id
+            },
+            tags=["workflow", "process"]
+        )
         
-        # Set up message history
-        messages = [HumanMessage(content=message)]
-        if prev_messages:
-            messages = prev_messages + messages
-        
-        # Create initial state
-        initial_state = {
-            "messages": messages,
-            "full_conversation_history": messages.copy(),
-            "customer_id": customer_id,
-            "customer_info": None,
-            "verified": False,
-            "verification_attempts": 0,
-            "contact_info": contact_info,
-            "intent": None,
-            "sub_intent": None,
-            "intent_confidence": None,
-            "sentiment": None,
-            "entities": None,
-            "service_info": None,
-            "account_status": None,
-            "billing_data": None,
-            "current_step": "initial_analysis",
-            "next_step": None,
-            "needs_human_review": False,
-            "human_review_reason": None,
-            "final_response": None,
-            "completion_status": None,
-            "processing_time": None,
-            "token_usage": None
-        }
-        
-        # Trace the workflow execution if tracing is enabled
-        if tracing_manager and tracing_manager.enabled:
-            with tracing_manager.get_tracer(tags=["workflow", "customer_message"]) as tracer:
-                # Execute the workflow
-                result = self.workflow.invoke(initial_state)
-                
-                # Add trace metadata
-                tracer.add_metadata({
-                    "customer_id": customer_id,
-                    "conversation_id": conversation_id,
-                    "intent": result.get("intent"),
-                    "sentiment": result.get("sentiment"),
-                    "verified": result.get("verified"),
-                    "needs_human_review": result.get("needs_human_review"),
-                    "human_review_reason": result.get("human_review_reason"),
-                    "completion_status": result.get("completion_status")
-                })
-        else:
-            # Execute the workflow without tracing
-            result = self.workflow.invoke(initial_state)
-        
-        # Calculate processing time
-        processing_time = time.time() - start_time
-        result["processing_time"] = processing_time
-        
-        # Format the result for the API response
-        response_data = {
-            "response": result.get("final_response"),
-            "intent": result.get("intent"),
-            "sub_intent": result.get("sub_intent"),
-            "intent_confidence": result.get("intent_confidence"),
-            "sentiment": result.get("sentiment"),
-            "verified": result.get("verified"),
-            "needs_human_review": result.get("needs_human_review"),
-            "human_review_reason": result.get("human_review_reason"),
-            "human_agent_summary": result.get("human_agent_summary"),
-            "conversation_id": conversation_id,
-            "completion_status": result.get("completion_status"),
-            "processing_time": processing_time
-        }
-        
-        return response_data
+        try:
+            # Check if workflow was properly initialized
+            if self.workflow is None:
+                error_msg = f"Workflow not initialized properly: {self.initialization_error}"
+                logger.error(error_msg)
+                return {
+                    "response": "I'm sorry, I couldn't process your request due to a technical issue with the workflow engine.",
+                    "error": error_msg,
+                    "conversation_id": conversation_id
+                }
+            
+            start_time = time.time()
+            
+            # Convert previous messages to the correct format if needed
+            formatted_prev_messages = []
+            if prev_messages:
+                for msg in prev_messages:
+                    if isinstance(msg, (HumanMessage, AIMessage, SystemMessage)):
+                        formatted_prev_messages.append(msg)
+                    elif isinstance(msg, dict) and "content" in msg:
+                        if msg.get("type") == "human":
+                            formatted_prev_messages.append(HumanMessage(content=msg["content"]))
+                        elif msg.get("type") == "ai":
+                            formatted_prev_messages.append(AIMessage(content=msg["content"]))
+                        elif msg.get("type") == "system":
+                            formatted_prev_messages.append(SystemMessage(content=msg["content"]))
+                    else:
+                        logger.warning(f"Skipping invalid message format: {msg}")
+            
+            # Prepare the initial state
+            initial_state = AgentState(
+                messages=formatted_prev_messages,
+                full_conversation_history=formatted_prev_messages.copy(),
+                current_message=message,  
+                customer_id=customer_id,
+                contact_info=contact_info,
+                current_step="initial",
+                verified=False,
+                verification_attempts=0,
+                needs_human_review=False,
+                human_review_reason=None,
+                new_message=None  # Initialize the temporary field
+            )
+            
+            # Process the message through the workflow
+            logger.debug(f"Invoking workflow with message: {message[:50]}...")
+            
+            # Detect available methods on the workflow object
+            has_ainvoke = hasattr(self.workflow, 'ainvoke')
+            has_invoke = hasattr(self.workflow, 'invoke')
+            
+            logger.debug(f"Available workflow methods - ainvoke: {has_ainvoke}, invoke: {has_invoke}")
+            
+            # Try different methods based on availability
+            try:
+                # First try the async method (preferred for newer LangGraph versions)
+                if has_ainvoke:
+                    logger.info("Using ainvoke method")
+                    result = await self.workflow.ainvoke(initial_state)
+                # If that fails, try the sync method
+                elif has_invoke:
+                    logger.info("Using synchronous invoke method")
+                    result = self.workflow.invoke(initial_state)
+                else:
+                    error_msg = "No compatible workflow invocation method found"
+                    logger.error(error_msg)
+                    return {
+                        "response": "I'm sorry, I couldn't process your request due to a technical issue with the workflow engine.",
+                        "error": error_msg,
+                        "conversation_id": conversation_id
+                    }
+            except Exception as e:
+                error_msg = f"Error invoking workflow: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                tracing_manager.end_trace(trace_id, error=str(e))
+                return {
+                    "response": "I'm sorry, I couldn't process your request due to a technical issue with the workflow engine.",
+                    "error": error_msg,
+                    "conversation_id": conversation_id
+                }
+            
+            # Calculate processing time
+            processing_time = time.time() - start_time
+            
+            # Extract the final response
+            final_response = result.get("final_response", "I'm sorry, I couldn't generate a response.")
+            
+            # Prepare the result
+            response_data = {
+                "response": final_response,
+                "conversation_id": conversation_id,
+                "processing_time": processing_time,
+                "needs_human_review": result.get("needs_human_review", False),
+                "intent": result.get("intent"),
+                "sentiment": result.get("sentiment")
+            }
+            
+            # End trace with success
+            tracing_manager.end_trace(trace_id, outputs=response_data)
+            
+            return response_data
+        except Exception as e:
+            error_msg = f"Error processing message: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            tracing_manager.end_trace(trace_id, error=str(e))
+            
+            return {
+                "response": "I'm sorry, I couldn't process your request due to a technical issue.",
+                "error": error_msg,
+                "conversation_id": conversation_id
+            }
 
 # Create a singleton instance
 workflow_manager = WorkflowManager()

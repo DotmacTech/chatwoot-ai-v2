@@ -1,0 +1,152 @@
+{% extends "layouts/base.html" %}
+{% from "components/metrics_card.html" import metrics_card %}
+
+{% block title %}Dashboard - Chatwoot AI{% endblock %}
+
+{% block content %}
+<div class="px-4 py-5 sm:px-6">
+    <h1 class="text-2xl font-semibold text-gray-900">System Dashboard</h1>
+    <p class="mt-1 text-sm text-gray-500">Overview of system performance and usage</p>
+</div>
+
+<div class="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+    <!-- Daily Usage -->
+    <div class="bg-white overflow-hidden shadow rounded-lg">
+        <div class="p-5">
+            <div class="flex items-center">
+                <div class="flex-1">
+                    <dt class="text-sm font-medium text-gray-500 truncate">Daily Token Usage</dt>
+                    <dd class="mt-1 text-3xl font-semibold text-gray-900">
+                        {{ "{:,}".format(daily_usage.total_tokens) }}
+                    </dd>
+                </div>
+                <div class="ml-4">
+                    <div class="inline-flex items-center px-2.5 py-0.5 rounded-full text-sm font-medium {% if daily_token_percent < 80 %}bg-green-100 text-green-800{% elif daily_token_percent < 90 %}bg-yellow-100 text-yellow-800{% else %}bg-red-100 text-red-800{% endif %}">
+                        {{ "%.1f"|format(daily_token_percent) }}%
+                    </div>
+                </div>
+            </div>
+            <div class="mt-4">
+                <div class="flex justify-between text-sm text-gray-600">
+                    <span>Progress</span>
+                    <span>{{ "{:,}".format(daily_usage.total_tokens) }} / {{ "{:,}".format(daily_token_limit) }}</span>
+                </div>
+                <div class="mt-1 w-full bg-gray-200 rounded-full h-2">
+                    <div class="h-2 rounded-full {% if daily_token_percent < 80 %}bg-green-500{% elif daily_token_percent < 90 %}bg-yellow-500{% else %}bg-red-500{% endif %}" style="width: {{ daily_token_percent }}%"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Monthly Usage -->
+    <div class="bg-white overflow-hidden shadow rounded-lg">
+        <div class="p-5">
+            <div class="flex items-center">
+                <div class="flex-1">
+                    <dt class="text-sm font-medium text-gray-500 truncate">Monthly Cost</dt>
+                    <dd class="mt-1 text-3xl font-semibold text-gray-900">${{ "%.2f"|format(monthly_cost) }}</dd>
+                </div>
+                <div class="ml-4">
+                    <div class="inline-flex items-center px-2.5 py-0.5 rounded-full text-sm font-medium {% if monthly_cost_percent < 80 %}bg-green-100 text-green-800{% elif monthly_cost_percent < 90 %}bg-yellow-100 text-yellow-800{% else %}bg-red-100 text-red-800{% endif %}">
+                        {{ "%.1f"|format(monthly_cost_percent) }}%
+                    </div>
+                </div>
+            </div>
+            <div class="mt-4">
+                <div class="flex justify-between text-sm text-gray-600">
+                    <span>Budget</span>
+                    <span>${{ "%.2f"|format(monthly_cost) }} / ${{ "%.2f"|format(monthly_budget) }}</span>
+                </div>
+                <div class="mt-1 w-full bg-gray-200 rounded-full h-2">
+                    <div class="h-2 rounded-full {% if monthly_cost_percent < 80 %}bg-green-500{% elif monthly_cost_percent < 90 %}bg-yellow-500{% else %}bg-red-500{% endif %}" style="width: {{ monthly_cost_percent }}%"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Token Distribution -->
+    <div class="bg-white overflow-hidden shadow rounded-lg">
+        <div class="p-5">
+            <dt class="text-sm font-medium text-gray-500 truncate">Token Distribution</dt>
+            <div class="mt-4 grid grid-cols-2 gap-4">
+                <div>
+                    <dt class="text-xs font-medium text-gray-500">Input Tokens</dt>
+                    <dd class="mt-1 text-xl font-semibold text-gray-900">{{ "{:,}".format(daily_usage.input_tokens) }}</dd>
+                </div>
+                <div>
+                    <dt class="text-xs font-medium text-gray-500">Output Tokens</dt>
+                    <dd class="mt-1 text-xl font-semibold text-gray-900">{{ "{:,}".format(daily_usage.output_tokens) }}</dd>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="mt-8 grid grid-cols-1 gap-5 sm:grid-cols-2">
+    <!-- System Status -->
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 sm:p-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">System Status</h3>
+            <div class="mt-6 space-y-4">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <div class="w-3 h-3 rounded-full bg-green-500"></div>
+                    </div>
+                    <div class="ml-3">
+                        <h4 class="text-sm font-medium text-gray-900">API Server</h4>
+                        <p class="text-sm text-gray-500">Running normally</p>
+                    </div>
+                </div>
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <div class="w-3 h-3 rounded-full bg-green-500"></div>
+                    </div>
+                    <div class="ml-3">
+                        <h4 class="text-sm font-medium text-gray-900">LangSmith Integration</h4>
+                        <p class="text-sm text-gray-500">Connected and syncing</p>
+                    </div>
+                </div>
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <div class="w-3 h-3 rounded-full bg-green-500"></div>
+                    </div>
+                    <div class="ml-3">
+                        <h4 class="text-sm font-medium text-gray-900">Intent Classification</h4>
+                        <p class="text-sm text-gray-500">Active and processing</p>
+                    </div>
+                </div>
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <div class="w-3 h-3 rounded-full bg-green-500"></div>
+                    </div>
+                    <div class="ml-3">
+                        <h4 class="text-sm font-medium text-gray-900">Cost Monitoring</h4>
+                        <p class="text-sm text-gray-500">Enabled and tracking</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Links -->
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 sm:p-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Quick Links</h3>
+            <div class="mt-6 space-y-4">
+                <a href="/monitoring-dashboard" class="block p-4 bg-indigo-50 rounded-md hover:bg-indigo-100">
+                    <h4 class="text-sm font-medium text-indigo-900">Monitoring Dashboard</h4>
+                    <p class="mt-1 text-sm text-indigo-700">View detailed performance metrics and response times</p>
+                </a>
+                <a href="/intent-dashboard" class="block p-4 bg-indigo-50 rounded-md hover:bg-indigo-100">
+                    <h4 class="text-sm font-medium text-indigo-900">Intent Classification</h4>
+                    <p class="mt-1 text-sm text-indigo-700">Test and monitor intent classification performance</p>
+                </a>
+                <a href="/health" class="block p-4 bg-indigo-50 rounded-md hover:bg-indigo-100">
+                    <h4 class="text-sm font-medium text-indigo-900">Health Check</h4>
+                    <p class="mt-1 text-sm text-indigo-700">View system health and connectivity status</p>
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
