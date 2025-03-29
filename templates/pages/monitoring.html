@@ -1,0 +1,134 @@
+{% extends "layouts/base.html" %}
+{% from "components/metrics_card.html" import metrics_card %}
+
+{% block title %}Monitoring Dashboard - Chatwoot AI{% endblock %}
+
+{% block content %}
+<div class="px-4 py-5 sm:px-6">
+    <h1 class="text-2xl font-semibold text-gray-900">System Monitoring</h1>
+    <p class="mt-1 text-sm text-gray-500">Real-time metrics and performance monitoring</p>
+</div>
+
+<div class="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+    {{ metrics_card(
+        title="Total Conversations",
+        value=metrics.total_conversations,
+        change=metrics.conversation_change,
+        description="Total conversations processed"
+    ) }}
+
+    {{ metrics_card(
+        title="AI Response Rate",
+        value=metrics.ai_response_rate|string + "%",
+        change=metrics.response_rate_change,
+        description="Percentage of messages handled by AI"
+    ) }}
+
+    {{ metrics_card(
+        title="Average Response Time",
+        value="{:.2f}s".format(metrics.avg_response_time),
+        change=metrics.response_time_change,
+        description="Average time to generate response"
+    ) }}
+</div>
+
+<div class="mt-8">
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 sm:p-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Response Time Trend</h3>
+            <div class="mt-4">
+                <canvas id="responseTimeChart"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="mt-8 grid grid-cols-1 gap-5 sm:grid-cols-2">
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 sm:p-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Token Usage</h3>
+            <div class="mt-4">
+                <canvas id="tokenUsageChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 sm:p-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Intent Distribution</h3>
+            <div class="mt-4">
+                <canvas id="intentDistributionChart"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const responseTimeData = {{ response_time_data | tojson }};
+const tokenUsageData = {{ token_usage_data | tojson }};
+const intentDistributionData = {{ intent_distribution_data | tojson }};
+
+// Response Time Chart
+const responseTimeCtx = document.getElementById('responseTimeChart').getContext('2d');
+new Chart(responseTimeCtx, {
+    type: 'line',
+    data: {
+        labels: responseTimeData.labels,
+        datasets: [{
+            label: 'Response Time (s)',
+            data: responseTimeData.values,
+            borderColor: 'rgb(79, 70, 229)',
+            tension: 0.1
+        }]
+    },
+    options: {
+        responsive: true,
+        plugins: {
+            legend: {
+                position: 'top'
+            }
+        }
+    }
+});
+
+// Token Usage Chart
+const tokenUsageCtx = document.getElementById('tokenUsageChart').getContext('2d');
+new Chart(tokenUsageCtx, {
+    type: 'bar',
+    data: {
+        labels: tokenUsageData.labels,
+        datasets: [{
+            label: 'Tokens Used',
+            data: tokenUsageData.values,
+            backgroundColor: 'rgb(59, 130, 246)'
+        }]
+    },
+    options: {
+        responsive: true
+    }
+});
+
+// Intent Distribution Chart
+const intentDistCtx = document.getElementById('intentDistributionChart').getContext('2d');
+new Chart(intentDistCtx, {
+    type: 'doughnut',
+    data: {
+        labels: intentDistributionData.labels,
+        datasets: [{
+            data: intentDistributionData.values,
+            backgroundColor: [
+                'rgb(59, 130, 246)',
+                'rgb(16, 185, 129)',
+                'rgb(245, 158, 11)',
+                'rgb(239, 68, 68)'
+            ]
+        }]
+    },
+    options: {
+        responsive: true
+    }
+});
+</script>
+{% endblock %}

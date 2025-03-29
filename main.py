@@ -1,4 +1,13 @@
-from fastapi import FastAPI, Request, HTTPException, Body
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from routers import health, webhook, intent, metrics
+from core.config import settings
+from utils.logging import AppLogger
+from chatwoot_langsmith import setup_langsmith
+from utils.security import verify_signature
+from fastapi import Request, HTTPException, Body, Depends
 import hmac
 import hashlib
 import os
@@ -6,108 +15,161 @@ import json
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
-from chatwoot.handler import process_webhook
-from chatwoot_langsmith import setup_langsmith, tracing_manager, feedback_manager, cost_monitor
+from handlers import ChatwootHandler
+from chatwoot_langsmith import tracing_manager, feedback_manager, cost_monitor
 from chatwoot_langsmith.feedback import FeedbackType
 from chatwoot_langchain import intent_classifier, INTENT_CATEGORIES
+from models.webhook import WebhookPayload
+from core.rate_limit import RateLimiter
+from core.cache import cache
+import httpx
+import redis
+import sys
+
+# Initialize logger
+logger = AppLogger(__name__)
 
 # Load environment variables
-load_dotenv()
+load_dotenv(".env.test")
 
-app = FastAPI(title="Chatwoot Automation")
+# Validate required environment variables
+required_vars = [
+    "CHATWOOT_API_KEY",
+    "CHATWOOT_ACCOUNT_ID",
+    "CHATWOOT_BASE_URL",
+    "REDIS_HOST",
+    "REDIS_PORT"
+]
+
+missing_vars = [var for var in required_vars if not os.getenv(var)]
+if missing_vars:
+    logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+    sys.exit(1)
+
+# Create FastAPI app
+app = FastAPI(
+    title="Chatwoot AI Assistant",
+    description="AI-powered assistant for Chatwoot using LangSmith and LangGraph",
+    version="1.0.0",
+    docs_url="/docs" if settings.ENVIRONMENT != "production" else None,
+    redoc_url="/redoc" if settings.ENVIRONMENT != "production" else None
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Initialize Redis connection
+redis_client = redis.Redis(
+    host=settings.REDIS_HOST,
+    port=settings.REDIS_PORT,
+    db=settings.REDIS_DB,
+    password=settings.REDIS_PASSWORD or None,
+    decode_responses=True
+)
+
+# Initialize rate limiter and handlers
+rate_limiter = RateLimiter()
+chatwoot_handler = ChatwootHandler()
+
+# Include routers
+app.include_router(health.router, tags=["health"])
+app.include_router(webhook.router, prefix="/api/v1", tags=["webhook"])
+app.include_router(intent.router, prefix="/api/v1", tags=["intent"])
+app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
 
 # Set up LangSmith
 setup_langsmith()
 
 # Get webhook secret from environment variables
 CHATWOOT_SECRET = os.getenv("CHATWOOT_WEBHOOK_SECRET")
+if not CHATWOOT_SECRET:
+    logger.warning("CHATWOOT_WEBHOOK_SECRET not set. Webhook signatures will not be verified!")
 
-@app.post("/chatwoot-webhook")
-async def webhook(request: Request):
-    """
-    Endpoint to receive Chatwoot webhooks
-    Processes webhook data without signature verification
-    """
-    # Process webhook payload directly
-    payload = await request.json()
-    result = await process_webhook(payload)
-    return result
-
-@app.get("/health")
-async def health_check():
-    """Simple health check endpoint"""
-    return {"status": "ok"}
-
-@app.get("/metrics")
-async def get_metrics():
-    """
-    Get current metrics from the tracing system
-    Returns performance and usage metrics
-    """
-    metrics = tracing_manager.get_metrics()
+async def verify_webhook_signature(request: Request):
+    """Verify Chatwoot webhook signature"""
+    if not settings.CHATWOOT_WEBHOOK_SECRET:
+        logger.warning("CHATWOOT_WEBHOOK_SECRET not set. Webhook signatures will not be verified!")
+        return True
     
-    # Add timestamp
-    metrics["timestamp"] = datetime.now().isoformat()
-    metrics["uptime_seconds"] = tracing_manager.metrics.get("uptime_seconds", 0)
+    signature = request.headers.get("X-Chatwoot-Signature")
+    if not signature:
+        logger.error("No webhook signature found in request")
+        raise HTTPException(status_code=401, detail="No signature provided")
     
-    return metrics
+    # Get raw body
+    body = await request.body()
+    
+    # Calculate expected signature
+    expected_signature = hmac.new(
+        settings.CHATWOOT_WEBHOOK_SECRET.encode(),
+        body,
+        hashlib.sha256
+    ).hexdigest()
+    
+    # Compare signatures
+    if not hmac.compare_digest(signature, expected_signature):
+        logger.error("Invalid webhook signature")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+    
+    return True
 
-@app.post("/metrics/reset")
-async def reset_metrics():
-    """
-    Reset all metrics in the tracing system
-    """
-    tracing_manager.reset_metrics()
-    return {"status": "ok", "message": "Metrics reset successfully"}
-
-@app.get("/traces")
-async def get_recent_traces(limit: int = 10):
-    """
-    Get recent traces from LangSmith
+@app.on_event("startup")
+async def startup_event():
+    """Run startup tasks"""
+    logger.info("Starting application...")
     
-    Args:
-        limit: Maximum number of traces to return (default: 10)
-    """
-    if not tracing_manager.enabled:
-        return {"status": "error", "message": "LangSmith tracing is not enabled"}
-    
+    # Test Redis connection
     try:
-        # Get recent runs from LangSmith
-        runs = tracing_manager.client.list_runs(
-            project_name=tracing_manager.project_name,
-            limit=limit
-        )
-        
-        # Format the runs for the response
-        formatted_runs = []
-        for run in runs:
-            formatted_runs.append({
-                "id": run.id,
-                "name": run.name,
-                "start_time": run.start_time.isoformat() if run.start_time else None,
-                "end_time": run.end_time.isoformat() if run.end_time else None,
-                "status": run.status,
-                "tags": run.tags,
-                "error": run.error
-            })
-        
-        return {"status": "ok", "traces": formatted_runs}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+        redis_client.ping()
+        logger.info("Redis connection successful")
+    except redis.ConnectionError as e:
+        logger.error("Failed to connect to Redis", exc_info=True)
+        raise HTTPException(status_code=503, detail="Redis connection failed")
 
-# Feedback API models
-class FeedbackRequest(BaseModel):
-    """Request model for submitting feedback"""
-    run_id: str
-    feedback_type: str
-    score: Optional[float] = None
-    comment: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
+    # Test Chatwoot connection
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.CHATWOOT_BASE_URL}/api/v1/accounts/{settings.CHATWOOT_ACCOUNT_ID}/contacts",
+                headers={"api_access_token": settings.CHATWOOT_API_TOKEN}
+            )
+            if response.status_code != 200:
+                logger.error(f"Chatwoot connection failed with status {response.status_code}")
+                raise HTTPException(status_code=503, detail="Chatwoot connection failed")
+            logger.info("Chatwoot connection successful")
+    except Exception as e:
+        logger.error("Failed to connect to Chatwoot", exc_info=True)
+        raise HTTPException(status_code=503, detail="Chatwoot connection failed")
+
+    logger.info("Application startup complete")
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all incoming requests"""
+    start_time = datetime.now()
+    response = await call_next(request)
+    duration = (datetime.now() - start_time).total_seconds()
+    
+    logger.info(
+        f"Request: {request.method} {request.url.path}",
+        extra={
+            "duration": duration,
+            "status_code": response.status_code,
+            "client_host": request.client.host
+        }
+    )
+    return response
 
 @app.post("/feedback")
-async def submit_feedback(feedback: FeedbackRequest):
+async def submit_feedback(feedback: Dict[str, Any] = Body(...)):
     """
     Submit feedback for a LangSmith run
     """
@@ -116,11 +178,11 @@ async def submit_feedback(feedback: FeedbackRequest):
     
     try:
         feedback_id = feedback_manager.submit_feedback(
-            run_id=feedback.run_id,
-            feedback_type=feedback.feedback_type,
-            score=feedback.score,
-            comment=feedback.comment,
-            metadata=feedback.metadata
+            run_id=feedback["run_id"],
+            feedback_type=feedback["feedback_type"],
+            score=feedback.get("score"),
+            comment=feedback.get("comment"),
+            metadata=feedback.get("metadata")
         )
         
         if feedback_id:
@@ -159,303 +221,57 @@ async def get_feedback_stats():
         return {"status": "error", "message": str(e)}
 
 @app.get("/monitoring-dashboard", response_class=HTMLResponse)
-async def monitoring_dashboard():
+async def monitoring_dashboard(request: Request):
     """
     Monitoring dashboard for the application.
     Displays metrics, traces, and feedback data.
     """
-    # Get usage statistics
-    usage_stats = cost_monitor.get_usage_stats()
-    
-    # Create HTML content without using f-strings for JavaScript parts
-    daily_tokens = usage_stats['daily']['tokens']['total']
-    daily_limit = usage_stats['daily']['limit']
-    daily_usage_percent = usage_stats['daily']['usage_percent']
-    
-    monthly_cost = usage_stats['monthly']['cost']
-    monthly_budget = usage_stats['monthly']['budget']
-    monthly_usage_percent = usage_stats['monthly']['usage_percent']
-    
-    daily_date = usage_stats['daily']['date']
-    monthly_month = usage_stats['monthly']['month']
-    
-    input_tokens = usage_stats['daily']['tokens']['input']
-    output_tokens = usage_stats['daily']['tokens']['output']
-    daily_cost = usage_stats['daily']['cost']
-    remaining_budget = usage_stats['monthly']['remaining']
-    
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Chatwoot Automation Monitoring</title>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <script src="https://cdn.tailwindcss.com"></script>
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    </head>
-    <body class="bg-gray-100">
-        <div class="container mx-auto px-4 py-8">
-            <h1 class="text-3xl font-bold mb-8 text-center">Chatwoot Automation Monitoring</h1>
-            
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                <!-- Usage Stats -->
-                <div class="bg-white p-6 rounded-lg shadow-md">
-                    <h2 class="text-xl font-semibold mb-4">Usage Statistics</h2>
-                    
-                    <div class="mb-4">
-                        <h3 class="text-lg font-medium mb-2">Daily Usage ({daily_date})</h3>
-                        <div class="flex justify-between mb-1">
-                            <span>Tokens: {daily_tokens} / {daily_limit}</span>
-                            <span>{daily_usage_percent:.1f}%</span>
-                        </div>
-                        <div class="w-full bg-gray-200 rounded-full h-2.5">
-                            <div class="bg-blue-600 h-2.5 rounded-full" style="width: {daily_usage_percent}%"></div>
-                        </div>
-                    </div>
-                    
-                    <div>
-                        <h3 class="text-lg font-medium mb-2">Monthly Budget ({monthly_month})</h3>
-                        <div class="flex justify-between mb-1">
-                            <span>Cost: ${monthly_cost:.2f} / ${monthly_budget:.2f}</span>
-                            <span>{monthly_usage_percent:.1f}%</span>
-                        </div>
-                        <div class="w-full bg-gray-200 rounded-full h-2.5">
-                            <div class="bg-green-600 h-2.5 rounded-full" style="width: {monthly_usage_percent}%"></div>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Cost Breakdown -->
-                <div class="bg-white p-6 rounded-lg shadow-md">
-                    <h2 class="text-xl font-semibold mb-4">Cost Breakdown</h2>
-                    <canvas id="costChart" class="w-full h-64"></canvas>
-                </div>
-            </div>
-            
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                <!-- Metrics -->
-                <div class="bg-white p-6 rounded-lg shadow-md">
-                    <h2 class="text-xl font-semibold mb-4">Metrics</h2>
-                    <ul class="space-y-2">
-                        <li class="flex justify-between">
-                            <span>Input Tokens:</span>
-                            <span class="font-medium">{input_tokens}</span>
-                        </li>
-                        <li class="flex justify-between">
-                            <span>Output Tokens:</span>
-                            <span class="font-medium">{output_tokens}</span>
-                        </li>
-                        <li class="flex justify-between">
-                            <span>Daily Cost:</span>
-                            <span class="font-medium">${daily_cost:.4f}</span>
-                        </li>
-                        <li class="flex justify-between">
-                            <span>Monthly Cost:</span>
-                            <span class="font-medium">${monthly_cost:.2f}</span>
-                        </li>
-                        <li class="flex justify-between">
-                            <span>Remaining Budget:</span>
-                            <span class="font-medium">${remaining_budget:.2f}</span>
-                        </li>
-                    </ul>
-                </div>
-                
-                <!-- Traces -->
-                <div class="bg-white p-6 rounded-lg shadow-md">
-                    <h2 class="text-xl font-semibold mb-4">Recent Traces</h2>
-                    <div id="traces-list" class="space-y-2">
-                        <p class="text-gray-500 text-center">Loading traces...</p>
-                    </div>
-                </div>
-                
-                <!-- Feedback -->
-                <div class="bg-white p-6 rounded-lg shadow-md">
-                    <h2 class="text-xl font-semibold mb-4">Feedback Summary</h2>
-                    <div id="feedback-summary" class="space-y-4">
-                        <p class="text-gray-500 text-center">Loading feedback...</p>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Usage History -->
-            <div class="bg-white p-6 rounded-lg shadow-md mb-8">
-                <h2 class="text-xl font-semibold mb-4">Usage History</h2>
-                <canvas id="historyChart" class="w-full h-80"></canvas>
-            </div>
-            
-            <!-- Cost Management -->
-            <div class="bg-white p-6 rounded-lg shadow-md">
-                <h2 class="text-xl font-semibold mb-4">Cost Management</h2>
-                
-                <form id="limits-form" class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Daily Token Limit</label>
-                        <input type="number" id="daily-token-limit" value="{daily_limit}" 
-                               class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
-                    </div>
-                    
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Monthly Budget (USD)</label>
-                        <input type="number" id="monthly-budget" value="{monthly_budget}" step="0.01"
-                               class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
-                    </div>
-                    
-                    <div class="md:col-span-2">
-                        <button type="submit" class="w-full bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                            Update Limits
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
+    try:
+        # Get usage statistics
+        usage_stats = cost_monitor.get_usage_stats()
         
-        <script>
-            // Cost Breakdown Chart
-            const costCtx = document.getElementById('costChart').getContext('2d');
-            const costChart = new Chart(costCtx, {{
-                type: 'pie',
-                data: {{
-                    labels: ['Input Tokens', 'Output Tokens'],
-                    datasets: [{{
-                        data: [{input_tokens}, {output_tokens}],
-                        backgroundColor: ['#3B82F6', '#10B981']
-                    }}]
-                }},
-                options: {{
-                    responsive: true,
-                    plugins: {{
-                        legend: {{
-                            position: 'bottom'
-                        }}
-                    }}
-                }}
-            }});
-            
-            // Usage History Chart (placeholder)
-            const historyCtx = document.getElementById('historyChart').getContext('2d');
-            const historyChart = new Chart(historyCtx, {{
-                type: 'line',
-                data: {{
-                    labels: ['Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5', 'Day 6', 'Day 7'],
-                    datasets: [{{
-                        label: 'Token Usage',
-                        data: [1200, 1900, 3000, 5000, 2000, 3000, 4000],
-                        borderColor: '#3B82F6',
-                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                        tension: 0.4,
-                        fill: true
-                    }}]
-                }},
-                options: {{
-                    responsive: true,
-                    plugins: {{
-                        legend: {{
-                            display: false
-                        }}
-                    }},
-                    scales: {{
-                        y: {{
-                            beginAtZero: true,
-                            title: {{
-                                display: true,
-                                text: 'Tokens'
-                            }}
-                        }}
-                    }}
-                }}
-            }});
-            
-            // Fetch traces
-            fetch('/traces?limit=5')
-                .then(response => response.json())
-                .then(data => {{
-                    const tracesList = document.getElementById('traces-list');
-                    if (data.traces && data.traces.length > 0) {{
-                        tracesList.innerHTML = data.traces.map(trace => `
-                            <div class="border-l-4 border-blue-500 pl-3 py-1">
-                                <div class="text-sm font-medium">${{trace.name}}</div>
-                                <div class="text-xs text-gray-500">${{new Date(trace.start_time).toLocaleString()}}</div>
-                            </div>
-                        `).join('');
-                    }} else {{
-                        tracesList.innerHTML = '<p class="text-gray-500 text-center">No traces found</p>';
-                    }}
-                }})
-                .catch(error => {{
-                    console.error('Error fetching traces:', error);
-                    document.getElementById('traces-list').innerHTML = '<p class="text-red-500 text-center">Error loading traces</p>';
-                }});
-            
-            // Fetch feedback summary
-            fetch('/feedback-stats')
-                .then(response => response.json())
-                .then(data => {{
-                    const feedbackSummary = document.getElementById('feedback-summary');
-                    feedbackSummary.innerHTML = `
-                        <div class="flex items-center justify-center">
-                            <div class="text-center">
-                                <div class="text-3xl font-bold text-indigo-600">${{data.average_score ? data.average_score.toFixed(1) : 'N/A'}}</div>
-                                <div class="text-sm text-gray-500">Average Score</div>
-                            </div>
-                        </div>
-                        <div class="grid grid-cols-3 gap-2 text-center">
-                            <div>
-                                <div class="text-lg font-medium">${{data.count_by_type?.accuracy || 0}}</div>
-                                <div class="text-xs text-gray-500">Accuracy</div>
-                            </div>
-                            <div>
-                                <div class="text-lg font-medium">${{data.count_by_type?.helpfulness || 0}}</div>
-                                <div class="text-xs text-gray-500">Helpfulness</div>
-                            </div>
-                            <div>
-                                <div class="text-lg font-medium">${{data.count_by_type?.satisfaction || 0}}</div>
-                                <div class="text-xs text-gray-500">Satisfaction</div>
-                            </div>
-                        </div>
-                    `;
-                }})
-                .catch(error => {{
-                    console.error('Error fetching feedback:', error);
-                    document.getElementById('feedback-summary').innerHTML = '<p class="text-red-500 text-center">Error loading feedback</p>';
-                }});
-            
-            // Update limits form
-            document.getElementById('limits-form').addEventListener('submit', function(e) {{
-                e.preventDefault();
-                
-                const dailyTokenLimit = document.getElementById('daily-token-limit').value;
-                const monthlyBudget = document.getElementById('monthly-budget').value;
-                
-                fetch('/update-limits', {{
-                    method: 'POST',
-                    headers: {{
-                        'Content-Type': 'application/json',
-                    }},
-                    body: JSON.stringify({{
-                        daily_token_limit: parseInt(dailyTokenLimit),
-                        monthly_budget: parseFloat(monthlyBudget)
-                    }}),
-                }})
-                .then(response => response.json())
-                .then(data => {{
-                    alert('Limits updated successfully!');
-                    window.location.reload();
-                }})
-                .catch(error => {{
-                    console.error('Error updating limits:', error);
-                    alert('Error updating limits. Please try again.');
-                }});
-            }});
-        </script>
-    </body>
-    </html>
-    """
-    
-    return html_content
+        # Create HTML content without using f-strings for JavaScript parts
+        daily_tokens = usage_stats['daily']['tokens']['total']
+        daily_limit = usage_stats['daily']['limit']
+        daily_usage_percent = usage_stats['daily']['usage_percent']
+        
+        monthly_cost = usage_stats['monthly']['cost']
+        monthly_budget = usage_stats['monthly']['budget']
+        monthly_usage_percent = usage_stats['monthly']['usage_percent']
+        
+        daily_date = usage_stats['daily']['date']
+        monthly_month = usage_stats['monthly']['month']
+        
+        input_tokens = usage_stats['daily']['tokens']['input']
+        output_tokens = usage_stats['daily']['tokens']['output']
+        daily_cost = usage_stats['daily']['cost']
+        remaining_budget = usage_stats['monthly']['remaining']
+        
+        return templates.TemplateResponse(
+            "pages/monitoring.html",
+            {
+                "request": request,
+                "active_page": "monitoring",
+                "daily_tokens": daily_tokens,
+                "daily_limit": daily_limit,
+                "daily_usage_percent": daily_usage_percent,
+                "monthly_cost": monthly_cost,
+                "monthly_budget": monthly_budget,
+                "monthly_usage_percent": monthly_usage_percent,
+                "daily_date": daily_date,
+                "monthly_month": monthly_month,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "daily_cost": daily_cost,
+                "remaining_budget": remaining_budget
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to render monitoring dashboard: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard():
+async def dashboard(request: Request):
     """
     Dashboard for monitoring the system.
     """
@@ -477,145 +293,21 @@ async def dashboard():
     daily_token_percent = (daily_usage.get("total_tokens", 0) / daily_token_limit * 100) if daily_token_limit else 0
     monthly_cost_percent = (monthly_usage.get("cost", 0) / monthly_budget * 100) if monthly_budget else 0
     
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Chatwoot Automation Dashboard</title>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <script src="https://cdn.tailwindcss.com"></script>
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    </head>
-    <body class="bg-gray-100">
-        <div class="container mx-auto px-4 py-8">
-            <h1 class="text-3xl font-bold mb-8 text-center">Chatwoot Automation Dashboard</h1>
-            
-            <div class="mb-6 flex justify-center space-x-4">
-                <a href="/dashboard" class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">
-                    Main Dashboard
-                </a>
-                <a href="/intent-dashboard" class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">
-                    Intent Classification
-                </a>
-                <a href="/usage-stats" class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">
-                    Detailed Usage Stats
-                </a>
-            </div>
-            
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                <!-- Daily Usage -->
-                <div class="bg-white p-6 rounded-lg shadow-md">
-                    <h2 class="text-xl font-semibold mb-4">Daily Usage</h2>
-                    <div class="grid grid-cols-2 gap-4 mb-4">
-                        <div class="bg-gray-50 p-4 rounded-md">
-                            <div class="text-sm text-gray-500">Input Tokens</div>
-                            <div class="text-2xl font-bold">{daily_usage.get("input_tokens", 0):,}</div>
-                        </div>
-                        <div class="bg-gray-50 p-4 rounded-md">
-                            <div class="text-sm text-gray-500">Output Tokens</div>
-                            <div class="text-2xl font-bold">{daily_usage.get("output_tokens", 0):,}</div>
-                        </div>
-                        <div class="bg-gray-50 p-4 rounded-md">
-                            <div class="text-sm text-gray-500">Total Tokens</div>
-                            <div class="text-2xl font-bold">{daily_usage.get("total_tokens", 0):,}</div>
-                        </div>
-                        <div class="bg-gray-50 p-4 rounded-md">
-                            <div class="text-sm text-gray-500">Cost</div>
-                            <div class="text-2xl font-bold">{daily_cost}</div>
-                        </div>
-                    </div>
-                    
-                    <div class="mb-2 flex justify-between text-sm">
-                        <span>Daily Token Usage</span>
-                        <span>{daily_usage.get("total_tokens", 0):,} / {daily_token_limit:,} ({daily_token_percent:.1f}%)</span>
-                    </div>
-                    <div class="w-full bg-gray-200 rounded-full h-2.5 mb-4">
-                        <div class="bg-blue-600 h-2.5 rounded-full" style="width: {min(daily_token_percent, 100)}%"></div>
-                    </div>
-                </div>
-                
-                <!-- Monthly Usage -->
-                <div class="bg-white p-6 rounded-lg shadow-md">
-                    <h2 class="text-xl font-semibold mb-4">Monthly Usage</h2>
-                    <div class="grid grid-cols-2 gap-4 mb-4">
-                        <div class="bg-gray-50 p-4 rounded-md">
-                            <div class="text-sm text-gray-500">Input Tokens</div>
-                            <div class="text-2xl font-bold">{monthly_usage.get("input_tokens", 0):,}</div>
-                        </div>
-                        <div class="bg-gray-50 p-4 rounded-md">
-                            <div class="text-sm text-gray-500">Output Tokens</div>
-                            <div class="text-2xl font-bold">{monthly_usage.get("output_tokens", 0):,}</div>
-                        </div>
-                        <div class="bg-gray-50 p-4 rounded-md">
-                            <div class="text-sm text-gray-500">Total Tokens</div>
-                            <div class="text-2xl font-bold">{monthly_usage.get("total_tokens", 0):,}</div>
-                        </div>
-                        <div class="bg-gray-50 p-4 rounded-md">
-                            <div class="text-sm text-gray-500">Cost</div>
-                            <div class="text-2xl font-bold">{monthly_cost}</div>
-                        </div>
-                    </div>
-                    
-                    <div class="mb-2 flex justify-between text-sm">
-                        <span>Monthly Budget</span>
-                        <span>{monthly_cost} / ${monthly_budget:.2f} ({monthly_cost_percent:.1f}%)</span>
-                    </div>
-                    <div class="w-full bg-gray-200 rounded-full h-2.5 mb-4">
-                        <div class="bg-green-600 h-2.5 rounded-full" style="width: {min(monthly_cost_percent, 100)}%"></div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                <!-- System Status -->
-                <div class="bg-white p-6 rounded-lg shadow-md">
-                    <h2 class="text-xl font-semibold mb-4">System Status</h2>
-                    <div class="space-y-4">
-                        <div class="flex items-center">
-                            <div class="w-3 h-3 rounded-full bg-green-500 mr-2"></div>
-                            <span>API Server: Running</span>
-                        </div>
-                        <div class="flex items-center">
-                            <div class="w-3 h-3 rounded-full bg-green-500 mr-2"></div>
-                            <span>LangSmith Integration: Connected</span>
-                        </div>
-                        <div class="flex items-center">
-                            <div class="w-3 h-3 rounded-full bg-green-500 mr-2"></div>
-                            <span>Intent Classification: Active</span>
-                        </div>
-                        <div class="flex items-center">
-                            <div class="w-3 h-3 rounded-full bg-green-500 mr-2"></div>
-                            <span>Cost Monitoring: Enabled</span>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Quick Links -->
-                <div class="bg-white p-6 rounded-lg shadow-md">
-                    <h2 class="text-xl font-semibold mb-4">Quick Links</h2>
-                    <div class="space-y-4">
-                        <a href="/intent-dashboard" class="block p-4 bg-indigo-50 rounded-md hover:bg-indigo-100">
-                            <h3 class="font-medium">Intent Classification Dashboard</h3>
-                            <p class="text-sm text-gray-600">Test and monitor intent classification performance</p>
-                        </a>
-                        <a href="/usage-stats" class="block p-4 bg-indigo-50 rounded-md hover:bg-indigo-100">
-                            <h3 class="font-medium">Detailed Usage Statistics</h3>
-                            <p class="text-sm text-gray-600">View detailed token usage and cost breakdown</p>
-                        </a>
-                        <a href="/health" class="block p-4 bg-indigo-50 rounded-md hover:bg-indigo-100">
-                            <h3 class="font-medium">Health Check</h3>
-                            <p class="text-sm text-gray-600">Check system health and connectivity</p>
-                        </a>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-    
-    return html_content
+    return templates.TemplateResponse(
+        "pages/dashboard.html",
+        {
+            "request": request,
+            "active_page": "dashboard",
+            "daily_usage": daily_usage,
+            "monthly_usage": monthly_usage,
+            "daily_cost": daily_cost,
+            "monthly_cost": monthly_cost,
+            "daily_token_limit": daily_token_limit,
+            "monthly_budget": monthly_budget,
+            "daily_token_percent": daily_token_percent,
+            "monthly_cost_percent": monthly_cost_percent
+        }
+    )
 
 # Intent classification endpoints
 @app.get("/intent-categories")
@@ -764,7 +456,7 @@ async def estimate_cost(request: Dict[str, Any]):
     )
 
 @app.get("/intent-dashboard", response_class=HTMLResponse)
-async def intent_dashboard():
+async def intent_dashboard(request: Request):
     """
     Dashboard for intent classification statistics and testing.
     """
@@ -774,256 +466,95 @@ async def intent_dashboard():
     # Get feedback stats
     stats = intent_classifier.get_feedback_stats()
     
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Intent Classification Dashboard</title>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <script src="https://cdn.tailwindcss.com"></script>
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    </head>
-    <body class="bg-gray-100">
-        <div class="container mx-auto px-4 py-8">
-            <h1 class="text-3xl font-bold mb-8 text-center">Intent Classification Dashboard</h1>
-            
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                <!-- Intent Categories -->
-                <div class="bg-white p-6 rounded-lg shadow-md">
-                    <h2 class="text-xl font-semibold mb-4">Intent Categories</h2>
-                    <div class="space-y-4">
-                        {
-                            ''.join([
-                                f'''
-                                <div class="border-l-4 border-indigo-500 pl-4 py-2">
-                                    <h3 class="text-lg font-medium">{intent.upper()}</h3>
-                                    <p class="text-gray-600">{data['description']}</p>
-                                    <div class="mt-2">
-                                        <p class="text-sm text-gray-500">Examples:</p>
-                                        <ul class="list-disc pl-5 text-sm">
-                                            {
-                                                ''.join([f'<li>{example}</li>' for example in data['examples']])
-                                            }
-                                        </ul>
-                                    </div>
-                                </div>
-                                '''
-                                for intent, data in categories.items()
-                            ])
-                        }
-                    </div>
-                </div>
-                
-                <!-- Intent Testing -->
-                <div class="bg-white p-6 rounded-lg shadow-md">
-                    <h2 class="text-xl font-semibold mb-4">Test Intent Classification</h2>
-                    <form id="intent-test-form" class="space-y-4">
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-1">Message</label>
-                            <textarea id="test-message" rows="4" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"></textarea>
-                        </div>
-                        <button type="submit" class="w-full bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                            Classify Intent
-                        </button>
-                    </form>
-                    
-                    <div id="classification-result" class="mt-4 hidden">
-                        <h3 class="text-lg font-medium mb-2">Classification Result</h3>
-                        <div class="bg-gray-50 p-4 rounded-md">
-                            <div class="flex justify-between mb-2">
-                                <span class="font-medium">Intent:</span>
-                                <span id="result-intent" class="px-2 py-1 bg-blue-100 text-blue-800 rounded-md"></span>
-                            </div>
-                            <div class="flex justify-between mb-2">
-                                <span class="font-medium">Confidence:</span>
-                                <span id="result-confidence"></span>
-                            </div>
-                            <div class="mb-2">
-                                <span class="font-medium">Reasoning:</span>
-                                <p id="result-reasoning" class="text-sm mt-1 text-gray-600"></p>
-                            </div>
-                            <div>
-                                <span class="font-medium">Suggested Response:</span>
-                                <p id="result-response" class="text-sm mt-1 text-gray-600"></p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                <!-- Feedback Stats -->
-                <div class="bg-white p-6 rounded-lg shadow-md">
-                    <h2 class="text-xl font-semibold mb-4">Feedback Statistics</h2>
-                    <div id="feedback-stats">
-                        <p class="text-center text-gray-500">Loading statistics...</p>
-                    </div>
-                </div>
-                
-                <!-- Confusion Matrix -->
-                <div class="bg-white p-6 rounded-lg shadow-md">
-                    <h2 class="text-xl font-semibold mb-4">Confusion Matrix</h2>
-                    <div id="confusion-matrix">
-                        <p class="text-center text-gray-500">Loading confusion matrix...</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <script>
-            // Test intent classification
-            document.getElementById('intent-test-form').addEventListener('submit', function(e) {{
-                e.preventDefault();
-                
-                const message = document.getElementById('test-message').value;
-                if (!message) return;
-                
-                fetch('/estimate-intent', {{
-                    method: 'POST',
-                    headers: {{
-                        'Content-Type': 'application/json',
-                    }},
-                    body: JSON.stringify({{ message: message }}),
-                }})
-                .then(response => response.json())
-                .then(data => {{
-                    if (data.status === 'ok') {{
-                        const result = data.classification;
-                        
-                        document.getElementById('result-intent').textContent = result.intent;
-                        document.getElementById('result-confidence').textContent = 
-                            (result.confidence * 100).toFixed(1) + '%';
-                        document.getElementById('result-reasoning').textContent = result.reasoning;
-                        document.getElementById('result-response').textContent = result.suggested_response;
-                        
-                        document.getElementById('classification-result').classList.remove('hidden');
-                    }} else {{
-                        alert('Error: ' + data.message);
-                    }}
-                }})
-                .catch(error => {{
-                    console.error('Error testing intent:', error);
-                    alert('Error testing intent. Please try again.');
-                }});
-            }});
-            
-            // Load feedback stats
-            fetch('/intent-stats')
-                .then(response => response.json())
-                .then(data => {{
-                    if (data.status === 'ok') {{
-                        const stats = data.stats;
-                        let statsHtml = '';
-                        
-                        if (Object.keys(stats).length === 0) {{
-                            statsHtml = '<p class="text-center text-gray-500">No feedback data available yet.</p>';
-                        }} else {{
-                            const totalCorrections = stats.total_corrections || 0;
-                            
-                            statsHtml = `
-                                <div class="mb-4">
-                                    <div class="text-2xl font-bold text-center text-indigo-600">${{totalCorrections}}</div>
-                                    <div class="text-sm text-center text-gray-500">Total Corrections</div>
-                                </div>
-                            `;
-                            
-                            if (stats.corrections_by_category) {{
-                                statsHtml += `
-                                    <h3 class="text-lg font-medium mb-2">Corrections by Category</h3>
-                                    <div class="space-y-2">
-                                `;
-                                
-                                for (const [category, count] of Object.entries(stats.corrections_by_category)) {{
-                                    const percentage = totalCorrections > 0 ? 
-                                        (count / totalCorrections * 100).toFixed(1) : 0;
-                                    
-                                    statsHtml += `
-                                        <div>
-                                            <div class="flex justify-between mb-1">
-                                                <span>${{category}}</span>
-                                                <span>${{count}} (${{percentage}}%)</span>
-                                            </div>
-                                            <div class="w-full bg-gray-200 rounded-full h-2">
-                                                <div class="bg-indigo-600 h-2 rounded-full" style="width: ${{percentage}}%"></div>
-                                            </div>
-                                        </div>
-                                    `;
-                                }}
-                                
-                                statsHtml += '</div>';
-                            }}
-                        }}
-                        
-                        document.getElementById('feedback-stats').innerHTML = statsHtml;
-                        
-                        // Render confusion matrix if available
-                        if (stats.confusion_matrix && Object.keys(stats.confusion_matrix).length > 0) {{
-                            const matrix = stats.confusion_matrix;
-                            const categories = [...new Set([
-                                ...Object.keys(matrix),
-                                ...Object.values(matrix).flatMap(obj => Object.keys(obj))
-                            ])];
-                            
-                            let matrixHtml = `
-                                <div class="overflow-x-auto">
-                                    <table class="min-w-full border-collapse">
-                                        <thead>
-                                            <tr>
-                                                <th class="border p-2 bg-gray-50">Original ↓ / Corrected →</th>
-                                                ${{categories.map(cat => `<th class="border p-2 bg-gray-50">${{cat}}</th>`).join('')}}
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                            `;
-                            
-                            for (const original of categories) {{
-                                matrixHtml += `<tr><th class="border p-2 bg-gray-50">${{original}}</th>`;
-                                
-                                for (const corrected of categories) {{
-                                    const count = matrix[original]?.[corrected] || 0;
-                                    const cellClass = count > 0 ? 'bg-blue-50 font-medium' : '';
-                                    
-                                    matrixHtml += `<td class="border p-2 text-center ${{cellClass}}">${{count}}</td>`;
-                                }}
-                                
-                                matrixHtml += '</tr>';
-                            }}
-                            
-                            matrixHtml += `
-                                        </tbody>
-                                    </table>
-                                </div>
-                                <p class="text-xs text-gray-500 mt-2">
-                                    The confusion matrix shows how often each intent was corrected to another intent.
-                                </p>
-                            `;
-                            
-                            document.getElementById('confusion-matrix').innerHTML = matrixHtml;
-                        }} else {{
-                            document.getElementById('confusion-matrix').innerHTML = 
-                                '<p class="text-center text-gray-500">No confusion matrix data available yet.</p>';
-                        }}
-                    }} else {{
-                        document.getElementById('feedback-stats').innerHTML = 
-                            '<p class="text-center text-red-500">Error loading statistics: ' + data.message + '</p>';
-                        document.getElementById('confusion-matrix').innerHTML = 
-                            '<p class="text-center text-red-500">Error loading confusion matrix.</p>';
-                    }}
-                }})
-                .catch(error => {{
-                    console.error('Error loading stats:', error);
-                    document.getElementById('feedback-stats').innerHTML = 
-                        '<p class="text-center text-red-500">Error loading statistics.</p>';
-                    document.getElementById('confusion-matrix').innerHTML = 
-                        '<p class="text-center text-red-500">Error loading confusion matrix.</p>';
-                }});
-        </script>
-    </body>
-    </html>
-    """
+    return templates.TemplateResponse(
+        "pages/intent_dashboard.html",
+        {
+            "request": request,
+            "active_page": "intent_dashboard",
+            "categories": categories,
+            "stats": stats
+        }
+    )
+
+@app.get("/test-connections")
+async def test_connections():
+    """Test connections to external services"""
+    results = {
+        "chatwoot": {"status": "unknown"},
+        "deepseek": {"status": "unknown"}
+    }
     
-    return html_content
+    # Test Chatwoot connection
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.CHATWOOT_BASE_URL}/api/v1/accounts/{settings.CHATWOOT_ACCOUNT_ID}/contacts",
+                headers={"api_access_token": settings.CHATWOOT_API_TOKEN}
+            )
+            if response.status_code == 200:
+                results["chatwoot"] = {"status": "success"}
+            else:
+                results["chatwoot"] = {
+                    "status": "error",
+                    "details": f"Status code: {response.status_code}"
+                }
+    except Exception as e:
+        results["chatwoot"] = {"status": "error", "details": str(e)}
+
+    # Test DeepSeek connection (we'll just verify we have the API key)
+    if settings.DEEPSEEK_API_KEY:
+        results["deepseek"] = {"status": "configured"}
+    else:
+        results["deepseek"] = {"status": "error", "details": "API key not configured"}
+
+    return results
+
+@app.post("/webhook")
+async def webhook(request: Request, verified: bool = Depends(verify_webhook_signature)):
+    """Handle Chatwoot webhook"""
+    try:
+        payload_dict = await request.json()
+        logger.info("Received webhook", extra={"payload": payload_dict})
+        
+        # Convert dict to WebhookPayload model
+        try:
+            from models.webhook import WebhookPayload
+            payload = WebhookPayload(**payload_dict)
+            
+            # Enhanced debug logging
+            logger.info("Parsed webhook payload", extra={
+                "event": payload.event,
+                "message_present": payload.message is not None,
+                "conversation_present": payload.conversation is not None,
+                "contact_present": payload.contact is not None,
+                "message_id": payload.message.id if payload.message else None,
+                "message_content": payload.message.content if payload.message else None,
+                "message_type": payload.message.message_type if payload.message else None,
+                "conversation_id": payload.conversation.id if payload.conversation else None,
+                "contact_id": payload.contact.id if payload.contact else None,
+                "contact_email": payload.contact.email if payload.contact else None
+            })
+            
+        except Exception as e:
+            logger.error(f"Error parsing webhook payload: {str(e)}", exc_info=True)
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "error": f"Invalid payload format: {str(e)}"}
+            )
+        
+        # Process webhook with Chatwoot handler
+        result = await chatwoot_handler.process(payload)
+        
+        # Debug the result
+        logger.info("Webhook processing result", extra={"result": result})
+        
+        return result
+    except Exception as e:
+        logger.error("Error processing webhook", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": str(e)}
+        )
 
 if __name__ == "__main__":
     import uvicorn

@@ -31,6 +31,10 @@ OPENAI_MODEL_NAME=gpt-3.5-turbo
 LANGCHAIN_API_KEY=your_langsmith_api_key
 LANGCHAIN_PROJECT=chatwoot-automation
 LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
+
+# CORS Settings
+CORS_ORIGINS=http://localhost:8000,https://your-production-domain.com
+CORS_ALLOW_CREDENTIALS=true
 ```
 
 ### Building and Running with Docker
@@ -58,6 +62,22 @@ docker-compose logs -f
 ```bash
 docker-compose down
 ```
+
+## Configuration
+
+### CORS Configuration
+
+For production deployment, update the `CORS_ORIGINS` environment variable to include only trusted domains. The value should be a comma-separated list of allowed origins:
+
+```bash
+# Development
+CORS_ORIGINS=http://localhost:8000
+
+# Production
+CORS_ORIGINS=https://app.yourdomain.com,https://dashboard.yourdomain.com
+```
+
+This ensures that only specified domains can make cross-origin requests to your API.
 
 ## Development
 

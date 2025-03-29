@@ -1,70 +1,88 @@
 """
-Intent Classifier Module
-
-This module provides functionality to classify customer intents using LangChain.
-It analyzes incoming messages to determine the appropriate routing for human agents.
+Intent classification module using LangChain.
 """
-
 import os
-from typing import Dict, List, Optional, Tuple, Any
 import json
-from datetime import datetime
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
-from langchain.chains import LLMChain
-# Fix the class name to match what's available in the package
-from langchain_deepseek import ChatDeepSeek
-from langsmith import Client
-from langsmith.run_helpers import traceable
+import logging
+from typing import Dict, List, Optional, Any
+from enum import Enum
+from pathlib import Path
 
-# Intent categories
+from langchain.output_parsers import StructuredOutputParser, ResponseSchema
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
+from langchain_deepseek import ChatDeepSeek
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain.memory import ConversationBufferMemory
+from langchain_core.runnables import RunnablePassthrough
+from pydantic import BaseModel, Field
+
+from chatwoot_langsmith import tracing_manager
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# Define intent categories
 INTENT_CATEGORIES = {
-    "sales": {
-        "description": "Sales inquiries, product information, pricing, and purchasing",
-        "examples": [
-            "I want to know more about your product",
-            "What's the price of your premium plan?",
-            "Do you offer discounts for annual subscriptions?",
-            "I'm interested in buying your product",
-            "Can you tell me about your features?"
-        ]
-    },
-    "support": {
-        "description": "Technical issues, troubleshooting, and product usage help",
-        "examples": [
-            "I'm having trouble logging in",
-            "The app keeps crashing when I try to upload a file",
-            "How do I reset my password?",
-            "Is your service down right now?",
-            "I can't figure out how to use this feature"
-        ]
-    },
-    "account": {
-        "description": "Account management, billing issues, and service changes",
-        "examples": [
-            "I need to update my payment method",
-            "When does my subscription renew?",
-            "I want to cancel my account",
-            "Can I upgrade my plan?",
-            "I was charged twice this month"
-        ]
-    },
-    "general": {
-        "description": "General inquiries, greetings, and other non-specific requests",
-        "examples": [
-            "Hello, is anyone there?",
-            "I have a question",
-            "Can you help me?",
-            "Thank you for your help",
-            "I'd like to speak with someone"
-        ]
-    }
+    "support": [
+        "technical_issue", 
+        "bug_report", 
+        "feature_request",
+        "account_access",
+        "password_reset",
+        "installation_help",
+        "integration_problem"
+    ],
+    "billing": [
+        "payment_issue",
+        "subscription_question",
+        "refund_request",
+        "invoice_request",
+        "pricing_question",
+        "upgrade_downgrade",
+        "payment_method"
+    ],
+    "product": [
+        "how_to",
+        "feature_inquiry",
+        "product_comparison",
+        "compatibility",
+        "limitations",
+        "best_practices",
+        "documentation"
+    ],
+    "sales": [
+        "pricing_inquiry",
+        "discount_request",
+        "demo_request",
+        "enterprise_question",
+        "bulk_purchase",
+        "contract_terms",
+        "partnership"
+    ],
+    "general": [
+        "greeting",
+        "thank_you",
+        "general_inquiry",
+        "feedback",
+        "complaint",
+        "praise",
+        "other"
+    ]
 }
 
+class IntentClassification(BaseModel):
+    """Intent classification result"""
+    primary_intent: str = Field(description="Primary intent category")
+    sub_intent: str = Field(description="Specific sub-intent within the primary category")
+    confidence: float = Field(description="Confidence score between 0 and 1")
+    entities: Dict[str, Any] = Field(description="Extracted entities from the message")
+    sentiment: Dict[str, Any] = Field(description="Sentiment analysis of the message")
+    requires_human: bool = Field(description="Whether human intervention is recommended")
+    reason: Optional[str] = Field(description="Reason for human intervention if required")
+
 class IntentClassifier:
-    """
-    A class for classifying customer intents using LangChain.
-    """
+    """A class for classifying customer intents using LangChain."""
     
     def __init__(self, model_name: str = None, temperature: float = 0.1):
         """
@@ -76,121 +94,154 @@ class IntentClassifier:
         """
         self.model_name = model_name or os.getenv("DEEPSEEK_MODEL_NAME", "deepseek-reasoner")
         self.temperature = temperature
-        # Update to use ChatDeepSeek with proper API key
+        
+        # Initialize LLM
         self.llm = ChatDeepSeek(
             model=self.model_name, 
             temperature=self.temperature,
             openai_api_key=os.getenv("DEEPSEEK_API_KEY"),
-            openai_api_base="https://api.deepseek.com/v1"
+            streaming=False
         )
-        self.langsmith_client = Client()
-        self.feedback_data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 
-                                              "data", "intent_feedback.json")
+        
+        # Initialize memory
+        self.memory = ConversationBufferMemory(
+            return_messages=True,
+            memory_key="chat_history",
+            output_key="output"
+        )
+        
+        # Set up the classification chain
         self._setup_classifier()
-        self._load_feedback_data()
-    
+        
+        # Load feedback data if exists
+        self.feedback_data_path = Path(__file__).parent.parent / "data" / "intent_feedback.json"
+        self.feedback_data = self._load_feedback_data()
+        
+        logger.info(f"Intent classifier initialized with model: {self.model_name}")
+        
     def _setup_classifier(self):
         """Set up the classification chain with prompt and output parser."""
-        # Create a prompt template with examples for each intent category
-        examples_text = ""
-        for intent, data in INTENT_CATEGORIES.items():
-            examples_text += f"\n{intent.upper()}: {data['description']}\nExamples:\n"
-            for example in data['examples']:
-                examples_text += f"- {example}\n"
+        # Define the output schema
+        response_schemas = [
+            ResponseSchema(name="primary_intent", description="The primary intent category of the message (support, billing, product, sales, general)"),
+            ResponseSchema(name="sub_intent", description="The specific sub-intent within the primary category"),
+            ResponseSchema(name="confidence", description="Confidence score between 0 and 1"),
+            ResponseSchema(name="entities", description="JSON object of extracted entities from the message"),
+            ResponseSchema(name="sentiment", description="JSON object with sentiment analysis (positive, negative, neutral) and intensity (0-1)"),
+            ResponseSchema(name="requires_human", description="Boolean indicating whether human intervention is recommended"),
+            ResponseSchema(name="reason", description="Reason for human intervention if required")
+        ]
         
-        prompt = ChatPromptTemplate.from_template(
-            """You are an intent classification system for a customer service platform.
-            Your job is to analyze customer messages and determine their primary intent.
-            
-            The possible intent categories are:
-            {examples}
-            
-            Analyze the following customer message and classify it into one of the intent categories.
-            If you're uncertain, use the "general" category.
-            
-            Customer message: {message}
-            
-            Provide your response as a JSON object with the following structure:
-            {{
-                "intent": "category_name",
-                "confidence": 0.0 to 1.0,
-                "reasoning": "Brief explanation of why you classified it this way",
-                "suggested_response": "A suggested initial response for a human agent"
-            }}
-            """
+        self.output_parser = StructuredOutputParser.from_response_schemas(response_schemas)
+        
+        # Create the prompt template
+        template = """
+        You are an AI assistant that classifies customer service messages into intent categories.
+        
+        Analyze the following message and classify it according to these categories:
+        
+        Primary intent categories:
+        - support: Technical issues, bugs, feature requests, account access
+        - billing: Payment issues, subscription questions, refunds, invoices
+        - product: How-to questions, feature inquiries, compatibility
+        - sales: Pricing, discounts, demos, enterprise questions
+        - general: Greetings, thank you, general inquiries, feedback
+        
+        Sub-intent categories for 'support':
+        {support_intents}
+        
+        Sub-intent categories for 'billing':
+        {billing_intents}
+        
+        Sub-intent categories for 'product':
+        {product_intents}
+        
+        Sub-intent categories for 'sales':
+        {sales_intents}
+        
+        Sub-intent categories for 'general':
+        {general_intents}
+        
+        Customer message: {message}
+        
+        {format_instructions}
+        """
+        
+        # Format the intents for the prompt
+        intent_formatters = {
+            "support_intents": ", ".join(INTENT_CATEGORIES["support"]),
+            "billing_intents": ", ".join(INTENT_CATEGORIES["billing"]),
+            "product_intents": ", ".join(INTENT_CATEGORIES["product"]),
+            "sales_intents": ", ".join(INTENT_CATEGORIES["sales"]),
+            "general_intents": ", ".join(INTENT_CATEGORIES["general"])
+        }
+        
+        self.prompt = PromptTemplate(
+            template=template,
+            input_variables=["message"],
+            partial_variables={
+                **intent_formatters,
+                "format_instructions": self.output_parser.get_format_instructions()
+            }
         )
         
-        # Set up the chain with JSON output parser
-        self.parser = JsonOutputParser()
-        self.chain = prompt | self.llm | self.parser
+        # Create the chain
+        self.chain = LLMChain(
+            llm=self.llm,
+            prompt=self.prompt,
+            output_key="output"
+        )
         
-        # Prepare the chain with examples - use bind instead of with_variables
-        self.chain = self.chain.bind(examples=examples_text)
-    
-    def _load_feedback_data(self):
-        """Load feedback data from file if it exists."""
-        os.makedirs(os.path.dirname(self.feedback_data_path), exist_ok=True)
-        
-        if os.path.exists(self.feedback_data_path):
-            try:
-                with open(self.feedback_data_path, 'r') as f:
-                    self.feedback_data = json.load(f)
-            except (json.JSONDecodeError, FileNotFoundError):
-                self.feedback_data = {"corrections": [], "stats": {}}
-        else:
-            self.feedback_data = {"corrections": [], "stats": {}}
-    
-    def _save_feedback_data(self):
-        """Save feedback data to file."""
-        with open(self.feedback_data_path, 'w') as f:
-            json.dump(self.feedback_data, f, indent=2)
-    
-    @traceable(run_type="llm")
-    async def classify_intent(self, message: str) -> Dict[str, Any]:
+    def classify_intent(self, message: str) -> IntentClassification:
         """
-        Classify the intent of a customer message.
+        Classify the intent of a message using the LangChain pipeline.
         
         Args:
-            message: The customer message to classify
+            message (str): The message to classify
             
         Returns:
-            A dictionary containing the classification results
+            IntentClassification: The classified intent with category, subcategory, and confidence
         """
         try:
-            result = await self.chain.ainvoke({"message": message})
+            # Run the classification chain
+            result = self.chain.invoke({"message": message})
             
-            # Ensure the result has all required fields
-            if not all(key in result for key in ["intent", "confidence", "reasoning", "suggested_response"]):
-                missing_keys = [key for key in ["intent", "confidence", "reasoning", "suggested_response"] 
-                               if key not in result]
-                raise ValueError(f"Missing required fields in classification result: {missing_keys}")
+            # Parse the output
+            parsed_output = self.output_parser.parse(result["output"])
             
-            # Validate intent category
-            if result["intent"] not in INTENT_CATEGORIES:
-                result["intent"] = "general"
-                result["confidence"] = min(result["confidence"], 0.5)
-                result["reasoning"] += " (Fallback to general category due to invalid intent)"
+            # Create the classification object
+            classification = IntentClassification(
+                primary_intent=parsed_output["primary_intent"],
+                sub_intent=parsed_output["sub_intent"],
+                confidence=float(parsed_output["confidence"]),
+                entities=parsed_output["entities"],
+                sentiment=parsed_output["sentiment"],
+                requires_human=parsed_output["requires_human"],
+                reason=parsed_output.get("reason", None)
+            )
             
-            # Add timestamp
-            result["timestamp"] = datetime.now().isoformat()
+            logger.info(f"Classified message as {classification.primary_intent}/{classification.sub_intent} with confidence {classification.confidence}")
             
-            return result
+            return classification
+            
         except Exception as e:
-            # Fallback to general intent if classification fails
-            return {
-                "intent": "general",
-                "confidence": 0.3,
-                "reasoning": f"Classification error: {str(e)}",
-                "suggested_response": "Thank you for contacting us. How can I assist you today?",
-                "timestamp": datetime.now().isoformat(),
-                "error": str(e)
-            }
+            logger.error(f"Error classifying intent: {e}")
+            # Return a fallback classification
+            return IntentClassification(
+                primary_intent="general",
+                sub_intent="other",
+                confidence=0.0,
+                entities={},
+                sentiment={"sentiment": "neutral", "intensity": 0.5},
+                requires_human=True,
+                reason=f"Error in classification: {str(e)}"
+            )
     
     def record_feedback(self, 
-                        original_classification: Dict[str, Any], 
-                        corrected_intent: str,
-                        agent_id: str,
-                        conversation_id: str) -> Dict[str, Any]:
+                       original_classification: Dict[str, Any], 
+                       corrected_intent: str,
+                       agent_id: str,
+                       conversation_id: str) -> Dict[str, Any]:
         """
         Record feedback on intent classification for improving the system.
         
@@ -203,76 +254,134 @@ class IntentClassifier:
         Returns:
             Updated feedback stats
         """
-        if corrected_intent not in INTENT_CATEGORIES:
-            raise ValueError(f"Invalid intent category: {corrected_intent}")
+        # Create trace for this operation
+        trace_id = tracing_manager.create_trace(
+            name="record_feedback",
+            inputs={
+                "original": original_classification,
+                "corrected": corrected_intent,
+                "conversation_id": conversation_id
+            },
+            tags=["intent", "feedback"]
+        )
         
-        # Record the correction
-        correction = {
-            "timestamp": datetime.now().isoformat(),
-            "conversation_id": conversation_id,
-            "agent_id": agent_id,
-            "original_intent": original_classification["intent"],
-            "corrected_intent": corrected_intent,
-            "original_confidence": original_classification["confidence"],
-            "message": original_classification.get("message", "")
+        try:
+            # Create feedback entry
+            timestamp = datetime.now().isoformat()
+            feedback_entry = {
+                "timestamp": timestamp,
+                "conversation_id": conversation_id,
+                "agent_id": agent_id,
+                "original_intent": original_classification["primary_intent"],
+                "original_sub_intent": original_classification["sub_intent"],
+                "corrected_intent": corrected_intent,
+                "confidence": original_classification["confidence"]
+            }
+            
+            # Add to feedback data
+            if "entries" not in self.feedback_data:
+                self.feedback_data["entries"] = []
+                
+            self.feedback_data["entries"].append(feedback_entry)
+            
+            # Save feedback data
+            self._save_feedback_data()
+            
+            # Calculate updated stats
+            stats = self._calculate_feedback_stats()
+            
+            if trace_id:
+                tracing_manager.end_trace(trace_id, outputs={"stats": stats})
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Error recording feedback: {e}")
+            if trace_id:
+                tracing_manager.end_trace(trace_id, error=str(e))
+            return {"error": str(e)}
+    
+    def _load_feedback_data(self) -> Dict[str, Any]:
+        """Load feedback data from file"""
+        if self.feedback_data_path.exists():
+            try:
+                with open(self.feedback_data_path, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Error loading feedback data: {e}")
+                
+        # Return empty data structure if file doesn't exist or error occurs
+        return {"entries": [], "stats": {}}
+    
+    def _save_feedback_data(self) -> bool:
+        """Save feedback data to file"""
+        try:
+            # Ensure the directory exists
+            self.feedback_data_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(self.feedback_data_path, 'w') as f:
+                json.dump(self.feedback_data, f, indent=2)
+                
+            return True
+        except Exception as e:
+            logger.error(f"Error saving feedback data: {e}")
+            return False
+    
+    def _calculate_feedback_stats(self) -> Dict[str, Any]:
+        """Calculate statistics from feedback data"""
+        entries = self.feedback_data.get("entries", [])
+        total_entries = len(entries)
+        
+        if total_entries == 0:
+            return {
+                "total_feedback": 0,
+                "accuracy": 0,
+                "category_accuracy": {},
+                "common_corrections": {}
+            }
+            
+        # Calculate overall accuracy
+        correct_entries = sum(1 for entry in entries if entry["original_intent"] == entry["corrected_intent"])
+        accuracy = correct_entries / total_entries
+        
+        # Calculate accuracy by category
+        categories = {}
+        for entry in entries:
+            category = entry["original_intent"]
+            if category not in categories:
+                categories[category] = {"total": 0, "correct": 0}
+                
+            categories[category]["total"] += 1
+            if entry["original_intent"] == entry["corrected_intent"]:
+                categories[category]["correct"] += 1
+                
+        category_accuracy = {
+            category: data["correct"] / data["total"] 
+            for category, data in categories.items()
         }
         
-        self.feedback_data["corrections"].append(correction)
+        # Find common corrections
+        corrections = {}
+        for entry in entries:
+            if entry["original_intent"] != entry["corrected_intent"]:
+                key = f"{entry['original_intent']} -> {entry['corrected_intent']}"
+                corrections[key] = corrections.get(key, 0) + 1
+                
+        # Sort corrections by frequency
+        sorted_corrections = dict(sorted(
+            corrections.items(), 
+            key=lambda item: item[1], 
+            reverse=True
+        )[:10])  # Top 10 corrections
         
-        # Update stats
-        stats = self.feedback_data.get("stats", {})
+        stats = {
+            "total_feedback": total_entries,
+            "accuracy": accuracy,
+            "category_accuracy": category_accuracy,
+            "common_corrections": sorted_corrections
+        }
         
-        # Initialize if not exists
-        if "total_corrections" not in stats:
-            stats["total_corrections"] = 0
-        if "corrections_by_category" not in stats:
-            stats["corrections_by_category"] = {}
-        if "confusion_matrix" not in stats:
-            stats["confusion_matrix"] = {}
-        
-        # Update total
-        stats["total_corrections"] += 1
-        
-        # Update by category
-        if original_classification["intent"] not in stats["corrections_by_category"]:
-            stats["corrections_by_category"][original_classification["intent"]] = 0
-        stats["corrections_by_category"][original_classification["intent"]] += 1
-        
-        # Update confusion matrix
-        original = original_classification["intent"]
-        corrected = corrected_intent
-        
-        if original not in stats["confusion_matrix"]:
-            stats["confusion_matrix"][original] = {}
-        if corrected not in stats["confusion_matrix"][original]:
-            stats["confusion_matrix"][original][corrected] = 0
-        stats["confusion_matrix"][original][corrected] += 1
-        
-        # Save updated data
+        # Update stats in the feedback data
         self.feedback_data["stats"] = stats
-        self._save_feedback_data()
-        
-        # Record in LangSmith if available
-        try:
-            run_id = original_classification.get("run_id")
-            if run_id:
-                self.langsmith_client.create_feedback(
-                    run_id=run_id,
-                    key="intent_correction",
-                    score=0.0,  # 0.0 indicates a correction was needed
-                    value={"original": original, "corrected": corrected}
-                )
-        except Exception:
-            # Silently continue if LangSmith feedback fails
-            pass
         
         return stats
-    
-    def get_feedback_stats(self) -> Dict[str, Any]:
-        """
-        Get statistics on intent classification feedback.
-        
-        Returns:
-            Dictionary containing feedback statistics
-        """
-        return self.feedback_data.get("stats", {})

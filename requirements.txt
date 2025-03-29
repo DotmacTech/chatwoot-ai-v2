@@ -11,6 +11,7 @@ langchain-core>=0.1.17
 langchain-community>=0.0.1  # Ensure consistent naming with hyphen
 requests>=2.31.0
 langchain-deepseek>=0.0.2  # Added for DeepSeek integration
+redis>=5.0.1
 
 # Testing dependencies
 pytest>=8.0.0

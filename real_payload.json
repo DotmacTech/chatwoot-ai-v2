@@ -1,0 +1,139 @@
+{
+    "account": {
+        "id": 2,
+        "name": "Dotmac Technologies"
+    },
+    "additional_attributes": {},
+    "content_attributes": {},
+    "content_type": "text",
+    "content": "Hey",
+    "conversation": {
+        "additional_attributes": {
+            "chat_id": 670097216
+        },
+        "can_reply": true,
+        "channel": "Channel::Telegram",
+        "contact_inbox": {
+            "id": 7887,
+            "contact_id": 9337,
+            "inbox_id": 88,
+            "source_id": "670097216",
+            "created_at": "2025-03-24T10:18:20.743Z",
+            "updated_at": "2025-03-24T10:18:20.743Z",
+            "hmac_verified": false,
+            "pubsub_token": "1oRhtqHbibFfH3mCWjeqiPzH"
+        },
+        "id": 1,
+        "inbox_id": 88,
+        "messages": [
+            {
+                "id": 227051,
+                "content": "Hey",
+                "account_id": 2,
+                "inbox_id": 88,
+                "conversation_id": 1,
+                "message_type": 0,
+                "created_at": 1743174783,
+                "updated_at": "2025-03-28T15:13:03.922Z",
+                "private": false,
+                "status": "sent",
+                "source_id": "1699",
+                "content_type": "text",
+                "content_attributes": {},
+                "sender_type": "Contact",
+                "sender_id": 9337,
+                "external_source_ids": {},
+                "additional_attributes": {},
+                "processed_message_content": "Hey",
+                "sentiment": {},
+                "conversation": {
+                    "assignee_id": null,
+                    "unread_count": 1,
+                    "last_activity_at": 1743174783,
+                    "contact_inbox": {
+                        "source_id": "670097216"
+                    }
+                },
+                "sender": {
+                    "additional_attributes": {
+                        "username": "Princekid",
+                        "language_code": "en",
+                        "social_telegram_user_id": 670097216,
+                        "social_telegram_user_name": "Princekid"
+                    },
+                    "custom_attributes": {},
+                    "email": null,
+                    "id": 9337,
+                    "identifier": null,
+                    "name": "Oracle ",
+                    "phone_number": null,
+                    "thumbnail": "https://chat.dotmac.ng/rails/active_storage/representations/redirect/eyJfcmFpbHMiOnsibWVzc2FnZSI6IkJBaHBBbUF6IiwiZXhwIjpudWxsLCJwdXIiOiJibG9iX2lkIn19--328f2339ce69c6843732c4d8b5fc2d856d79d882/eyJfcmFpbHMiOnsibWVzc2FnZSI6IkJBaDdCem9MWm05eWJXRjBTU0lJYW5CbkJqb0dSVlE2RTNKbGMybDZaVjkwYjE5bWFXeHNXd2RwQWZvdyIsImV4cCI6bnVsbCwicHVyIjoidmFyaWF0aW9uIn19--03dca47078ca089c2695bafe74bd3664b021a9d8/file_7.jpg",
+                    "type": "contact"
+                }
+            }
+        ],
+        "labels": [],
+        "meta": {
+            "sender": {
+                "additional_attributes": {
+                    "username": "Princekid",
+                    "language_code": "en",
+                    "social_telegram_user_id": 670097216,
+                    "social_telegram_user_name": "Princekid"
+                },
+                "custom_attributes": {},
+                "email": null,
+                "id": 9337,
+                "identifier": null,
+                "name": "Oracle ",
+                "phone_number": null,
+                "thumbnail": "https://chat.dotmac.ng/rails/active_storage/representations/redirect/eyJfcmFpbHMiOnsibWVzc2FnZSI6IkJBaHBBbUF6IiwiZXhwIjpudWxsLCJwdXIiOiJibG9iX2lkIn19--328f2339ce69c6843732c4d8b5fc2d856d79d882/eyJfcmFpbHMiOnsibWVzc2FnZSI6IkJBaDdCem9MWm05eWJXRjBTU0lJYW5CbkJqb0dSVlE2RTNKbGMybDZaVjkwYjE5bWFXeHNXd2RwQWZvdyIsImV4cCI6bnVsbCwicHVyIjoidmFyaWF0aW9uIn19--03dca47078ca089c2695bafe74bd3664b021a9d8/file_7.jpg",
+                "type": "contact"
+            },
+            "assignee": null,
+            "team": null,
+            "hmac_verified": false
+        },
+        "status": "open",
+        "custom_attributes": {},
+        "snoozed_until": null,
+        "unread_count": 1,
+        "first_reply_created_at": "2025-03-25T10:21:18.407Z",
+        "priority": null,
+        "waiting_since": 0,
+        "agent_last_seen_at": 1743144538,
+        "contact_last_seen_at": 0,
+        "timestamp": 1743174783,
+        "created_at": 1742811501
+    },
+    "created_at": "2025-03-28T15:13:03.922Z",
+    "id": 227051,
+    "inbox": {
+        "id": 88,
+        "name": "DappairdropBot"
+    },
+    "message_type": "incoming",
+    "private": false,
+    "sender": {
+        "account": {
+            "id": 2,
+            "name": "Dotmac Technologies"
+        },
+        "additional_attributes": {
+            "username": "Princekid",
+            "language_code": "en",
+            "social_telegram_user_id": 670097216,
+            "social_telegram_user_name": "Princekid"
+        },
+        "avatar": "https://chat.dotmac.ng/rails/active_storage/representations/redirect/eyJfcmFpbHMiOnsibWVzc2FnZSI6IkJBaHBBbUF6IiwiZXhwIjpudWxsLCJwdXIiOiJibG9iX2lkIn19--328f2339ce69c6843732c4d8b5fc2d856d79d882/eyJfcmFpbHMiOnsibWVzc2FnZSI6IkJBaDdCem9MWm05eWJXRjBTU0lJYW5CbkJqb0dSVlE2RTNKbGMybDZaVjkwYjE5bWFXeHNXd2RwQWZvdyIsImV4cCI6bnVsbCwicHVyIjoidmFyaWF0aW9uIn19--03dca47078ca089c2695bafe74bd3664b021a9d8/file_7.jpg",
+        "custom_attributes": {},
+        "email": null,
+        "id": 9337,
+        "identifier": null,
+        "name": "Oracle ",
+        "phone_number": null,
+        "thumbnail": "https://chat.dotmac.ng/rails/active_storage/representations/redirect/eyJfcmFpbHMiOnsibWVzc2FnZSI6IkJBaHBBbUF6IiwiZXhwIjpudWxsLCJwdXIiOiJibG9iX2lkIn19--328f2339ce69c6843732c4d8b5fc2d856d79d882/eyJfcmFpbHMiOnsibWVzc2FnZSI6IkJBaDdCem9MWm05eWJXRjBTU0lJYW5CbkJqb0dSVlE2RTNKbGMybDZaVjkwYjE5bWFXeHNXd2RwQWZvdyIsImV4cCI6bnVsbCwicHVyIjoidmFyaWF0aW9uIn19--03dca47078ca089c2695bafe74bd3664b021a9d8/file_7.jpg"
+    },
+    "source_id": "1699",
+    "event": "message_created"
+}
