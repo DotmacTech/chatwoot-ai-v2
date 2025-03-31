@@ -14,7 +14,7 @@ services:
       - REDIS_PASSWORD=
       - PYTHONUNBUFFERED=1
     env_file:
-      - .env.test
+      - .env
     depends_on:
       redis:
         condition: service_healthy

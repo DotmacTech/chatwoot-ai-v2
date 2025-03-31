@@ -26,8 +26,8 @@ class AppLogger:
     def info(self, message: str, extra: Optional[Dict[str, Any]] = None):
         self.logger.info(message, extra=extra or {})
     
-    def warning(self, message: str, extra: Optional[Dict[str, Any]] = None):
-        self.logger.warning(message, extra=extra or {})
+    def warning(self, message: str, exc_info: bool = False, extra: Optional[Dict[str, Any]] = None):
+        self.logger.warning(message, exc_info=exc_info, extra=extra or {})
     
     def error(self, message: str, exc_info: bool = False, extra: Optional[Dict[str, Any]] = None):
         self.logger.error(message, exc_info=exc_info, extra=extra or {})

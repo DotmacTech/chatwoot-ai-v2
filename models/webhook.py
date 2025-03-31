@@ -137,7 +137,7 @@ class Message(BaseModel):
 class WebhookPayload(BaseModel):
     """Webhook payload from Chatwoot"""
     # Top-level fields
-    event: EventType
+    event: Union[EventType, str]  # Accept any string value for event
     id: Optional[int] = None
     content: Optional[str] = None
     content_type: Optional[str] = None
@@ -155,3 +155,7 @@ class WebhookPayload(BaseModel):
     contact: Optional[Contact] = None
     sender: Optional[Sender] = None
     inbox: Optional[Inbox] = None
+
+    class Config:
+        # Allow extra fields that aren't defined in the model
+        extra = "allow"

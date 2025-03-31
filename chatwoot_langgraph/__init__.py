@@ -16,6 +16,6 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Initialize components
-from chatwoot_langgraph.workflow import workflow_manager
+from chatwoot_langgraph.workflow import WorkflowManager
 
-__all__ = ['workflow_manager']
+__all__ = ['WorkflowManager']

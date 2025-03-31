@@ -4,7 +4,6 @@ from typing import List, Optional
 from pydantic import BaseModel
 from core.config import settings
 from utils.logging import AppLogger
-from chatwoot_langsmith import tracing_manager
 
 router = APIRouter(tags=["metrics"])
 logger = AppLogger(__name__)
@@ -23,11 +22,11 @@ class Trace(BaseModel):
 async def get_metrics():
     """Get current metrics from the tracing system"""
     try:
-        metrics = tracing_manager.get_metrics()
+        metrics = get_langsmith_service().get_metrics()
         
         # Add timestamp and uptime
         metrics["timestamp"] = datetime.now().isoformat()
-        metrics["uptime_seconds"] = tracing_manager.metrics.get("uptime_seconds", 0)
+        metrics["uptime_seconds"] = get_langsmith_service().metrics.get("uptime_seconds", 0)
         
         return metrics
     except Exception as e:
@@ -41,7 +40,7 @@ async def get_metrics():
 async def reset_metrics():
     """Reset all metrics in the tracing system"""
     try:
-        tracing_manager.reset_metrics()
+        get_langsmith_service().reset_metrics()
         return {
             "status": "success",
             "message": "Metrics reset successfully",
@@ -62,7 +61,7 @@ async def get_recent_traces(limit: int = 10) -> List[Trace]:
     Args:
         limit: Maximum number of traces to return (default: 10)
     """
-    if not tracing_manager.enabled:
+    if not get_langsmith_service().enabled:
         raise HTTPException(
             status_code=400,
             detail="LangSmith tracing is not enabled"
@@ -70,8 +69,8 @@ async def get_recent_traces(limit: int = 10) -> List[Trace]:
     
     try:
         # Get recent runs from LangSmith
-        runs = tracing_manager.client.list_runs(
-            project_name=tracing_manager.project_name,
+        runs = get_langsmith_service().client.list_runs(
+            project_name=get_langsmith_service().project_name,
             limit=limit
         )
         
